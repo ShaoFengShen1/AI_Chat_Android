@@ -1,0 +1,36 @@
+# Android Studio
+*.iml
+.gradle/
+.idea/
+*.apk
+*.ap_
+*.aab
+local.properties
+.kotlin/
+
+# Build
+build/
+/captures
+.externalNativeBuild
+.cxx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keystore
+*.jks
+*.keystore
+debug_2.keystore
+
+# Temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Documentation (keep only main README and development report)
+report.md
+图片生成功能说明.md
+技术实现文档.md
+智能对话摘要功能.md
