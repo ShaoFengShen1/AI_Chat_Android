@@ -183,7 +183,7 @@ class VoiceTTSService(
     /**
      * 文字转语音（TTS API）
      */
-    private suspend fun textToSpeech(text: String): File? = withContext(Dispatchers.IO) {
+    suspend fun textToSpeech(text: String): File? = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "→ 调用 TTS API，文本长度: ${text.length}")
             

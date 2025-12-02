@@ -38,7 +38,8 @@ import java.util.*
 @Composable
 fun ChatListScreen(
     onChatClick: (String) -> Unit,
-    onNewChatClick: () -> Unit
+    onNewChatClick: () -> Unit,
+    onNewRealtimeChatClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val database = remember { AppDatabase.getInstance(context) }
@@ -48,6 +49,9 @@ fun ChatListScreen(
 
     val sessions by viewModel.sessions.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    
+    // 会话类型选择对话框状态
+    var showSessionTypeDialog by remember { mutableStateOf(false) }
 
     // 每次进入页面时刷新
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -75,7 +79,7 @@ fun ChatListScreen(
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = onNewChatClick,
+                onClick = { showSessionTypeDialog = true },
                 containerColor = MaterialTheme.colorScheme.primary
             ) {
                 Icon(
@@ -114,7 +118,14 @@ fun ChatListScreen(
                             AnimatedChatSessionItem(
                                 session = session,
                                 index = index,
-                                onClick = { onChatClick(session.sessionId) },
+                                onClick = { 
+                                    // 根据标题判断是否为实时对话
+                                    val isRealtime = session.title.contains("🎙️") || 
+                                                     session.title.contains("🎤") || 
+                                                     session.title.contains("实时语音") ||
+                                                     session.title.contains("实时对话")
+                                    onChatClick(session.sessionId + if (isRealtime) "?isRealtime=true" else "")
+                                },
                                 viewModel = viewModel
                             )
                             HorizontalDivider()
@@ -123,6 +134,21 @@ fun ChatListScreen(
                 }
             }
         }
+    }
+    
+    // 会话类型选择对话框
+    if (showSessionTypeDialog) {
+        SessionTypeDialog(
+            onDismiss = { showSessionTypeDialog = false },
+            onNormalChatSelected = {
+                showSessionTypeDialog = false
+                onNewChatClick()
+            },
+            onRealtimeChatSelected = {
+                showSessionTypeDialog = false
+                onNewRealtimeChatClick()
+            }
+        )
     }
 }
 
@@ -350,6 +376,106 @@ fun ChatSessionItem(
             }
         }
     }
+}
+
+/**
+ * 会话类型选择对话框
+ */
+@Composable
+fun SessionTypeDialog(
+    onDismiss: () -> Unit,
+    onNormalChatSelected: () -> Unit,
+    onRealtimeChatSelected: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "选择对话类型",
+                style = MaterialTheme.typography.titleLarge
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 普通聊天选项
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNormalChatSelected() },
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "💬",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = "普通聊天",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "文字对话，支持图片生成、文档上传",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+                
+                // 实时语音对话选项
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onRealtimeChatSelected() },
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "🎙️",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = "实时语音对话",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "豆包端到端实时语音，超低延迟，自然对话",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
 }
 
 private fun formatTimestamp(timestamp: Long): String {

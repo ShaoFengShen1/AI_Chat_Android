@@ -172,7 +172,13 @@ class ApiService {
                     val responseTime = System.currentTimeMillis() - startTime
                     
                     if (!response.isSuccessful) {
-                        android.util.Log.w("AIIntentDetector", "AI意图识别失败: ${response.code}, 降级到正则表达式")
+                        val errorBody = response.body?.string() ?: "unknown error"
+                        when (response.code) {
+                            429 -> android.util.Log.w("AIIntentDetector", "AI意图识别失败: 429 Too Many Requests (请求过于频繁), 降级到正则表达式")
+                            401, 403 -> android.util.Log.w("AIIntentDetector", "AI意图识别失败: ${response.code} 认证错误, 降级到正则表达式")
+                            else -> android.util.Log.w("AIIntentDetector", "AI意图识别失败: ${response.code}, 降级到正则表达式")
+                        }
+                        android.util.Log.d("AIIntentDetector", "错误详情: $errorBody")
                         return@withContext RegexIntentDetector().detectIntent(message, hasImage)
                     }
 

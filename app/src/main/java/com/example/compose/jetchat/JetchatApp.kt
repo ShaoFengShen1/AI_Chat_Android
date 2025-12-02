@@ -33,8 +33,9 @@ fun JetchatApp() {
             val database = remember { AppDatabase.getInstance(context) }
             
             ChatListScreen(
-                onChatClick = { sessionId ->
-                    navController.navigate("chat/$sessionId")
+                onChatClick = { sessionIdWithParams ->
+                    // sessionIdWithParams 可能包含 ?isRealtime=true 参数
+                    navController.navigate("chat/$sessionIdWithParams")
                 },
                 onNewChatClick = {
                     val newSessionId = System.currentTimeMillis().toString()
@@ -51,20 +52,42 @@ fun JetchatApp() {
                         )
                     }
                     navController.navigate("chat/$newSessionId")
+                },
+                onNewRealtimeChatClick = {
+                    val newSessionId = System.currentTimeMillis().toString()
+                    // 创建实时语音对话会话
+                    CoroutineScope(Dispatchers.IO).launch {
+                        database.chatDao().insertMessage(
+                            ChatMessageEntity(
+                                sessionId = newSessionId,
+                                role = "system",
+                                content = "实时语音对话会话",
+                                timestamp = System.currentTimeMillis(),
+                                sessionTitle = "🎙️ 实时语音对话"
+                            )
+                        )
+                    }
+                    navController.navigate("chat/$newSessionId?isRealtime=true")
                 }
             )
         }
 
         // 对话详情页面
         composable(
-            route = "chat/{sessionId}",
+            route = "chat/{sessionId}?isRealtime={isRealtime}",
             arguments = listOf(
-                navArgument("sessionId") { type = NavType.StringType }
+                navArgument("sessionId") { type = NavType.StringType },
+                navArgument("isRealtime") { 
+                    type = NavType.BoolType
+                    defaultValue = false
+                }
             )
         ) { backStackEntry ->
             val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
+            val isRealtime = backStackEntry.arguments?.getBoolean("isRealtime") ?: false
             ChatScreen(
                 sessionId = sessionId,
+                isRealtimeMode = isRealtime,
                 onBackClick = {
                     navController.popBackStack()
                 }

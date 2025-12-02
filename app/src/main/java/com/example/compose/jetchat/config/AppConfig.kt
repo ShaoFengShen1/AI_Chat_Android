@@ -93,6 +93,35 @@ object AppConfig {
     var VOICE_MODE = VoiceMode.SIMPLE  // 默认简单模式
     
     /**
+     * 豆包端到端实时语音对话配置
+     * 
+     * 使用豆包 Realtime API 进行端到端语音对话
+     * WebSocket URL: wss://openspeech.bytedance.com/api/v3/realtime/dialogue
+     * 
+     * ⚠️ 重要：请在火山引擎控制台获取以下参数
+     * 获取地址：https://console.volcengine.com/speech
+     * 
+     * 注意事项：
+     * 1. 需要开通豆包端到端实时语音大模型服务
+     * 2. AppID 和 AccessKey 可在控制台查看
+     * 3. 默认限流：60 QPM，10000 TPM
+     */
+    const val DOUBAO_WEBSOCKET_URL = "wss://openspeech.bytedance.com/api/v3/realtime/dialogue"
+    const val DOUBAO_APP_ID = "5378919538"  // ⚠️ 替换为你的 AppID
+    const val DOUBAO_ACCESS_KEY = "IZADZfCNNyC6FdvWvmDQdseW1w2aIDdl"  // ⚠️ 替换为你的 Access Key
+    
+    /**
+     * 会话类型枚举
+     * 
+     * NORMAL: 普通聊天（文字对话）
+     * DOUBAO_REALTIME: 豆包端到端实时语音对话
+     */
+    enum class SessionType {
+        NORMAL,           // 普通文字聊天
+        DOUBAO_REALTIME   // 豆包端到端实时语音对话
+    }
+    
+    /**
      * 意图识别配置
      * 
      * USE_AI_INTENT_DETECTION = true:  使用AI模型识别意图（推荐，准确率更高）

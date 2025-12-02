@@ -31,7 +31,13 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.window.Dialog
 import android.widget.Toast
 import androidx.compose.ui.window.DialogProperties
@@ -69,6 +75,7 @@ import java.io.InputStream
 @Composable
 fun ChatScreen(
     sessionId: String,
+    isRealtimeMode: Boolean = false,
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -78,7 +85,8 @@ fun ChatScreen(
             context.applicationContext as android.app.Application,
             sessionId,
             database.chatDao(),
-            database.sessionSummaryDao()
+            database.sessionSummaryDao(),
+            isRealtimeMode = isRealtimeMode
         )
     )
     val messages by viewModel.messages.collectAsState()
@@ -99,12 +107,8 @@ fun ChatScreen(
     val voiceTranscription by viewModel.voiceTranscription.collectAsState()
     var showMicrophonePermissionDialog by remember { mutableStateOf(false) }
     
-    // 当语音转录完成时，自动填充到输入框
-    LaunchedEffect(voiceTranscription) {
-        if (voiceTranscription.isNotEmpty()) {
-            inputText = voiceTranscription
-        }
-    }
+    // 豆包实时对话状态
+    var isDoubaoRealtimeActive by remember { mutableStateOf(false) }
     
     // Snackbar 状态
     val snackbarHostState = remember { SnackbarHostState() }
@@ -279,6 +283,68 @@ fun ChatScreen(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "返回"
                         )
+                    }
+                },
+                actions = {
+                    // 实时模式：显示豆包实时对话按钮
+                    if (isRealtimeMode) {
+                        IconButton(
+                            onClick = {
+                                if (!isDoubaoRealtimeActive) {
+                                    // 启动豆包实时对话
+                                    viewModel.startDoubaoRealtimeConversation()
+                                    isDoubaoRealtimeActive = true
+                                } else {
+                                    // 停止实时对话
+                                    viewModel.stopDoubaoRealtimeConversation()
+                                    isDoubaoRealtimeActive = false
+                                }
+                            }
+                        ) {
+                            if (!isDoubaoRealtimeActive) {
+                                Icon(
+                                    imageVector = Icons.Default.Mic,
+                                    contentDescription = "启动实时对话",
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            } else {
+                                // 麦克风小球动画
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    // 脉冲动画
+                                    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                                    val scale by infiniteTransition.animateFloat(
+                                        initialValue = 1f,
+                                        targetValue = 1.3f,
+                                        animationSpec = infiniteRepeatable(
+                                            animation = tween(600, easing = FastOutSlowInEasing),
+                                            repeatMode = RepeatMode.Reverse
+                                        ),
+                                        label = "scale"
+                                    )
+                                    
+                                    // 背景小球
+                                    Box(
+                                        modifier = Modifier
+                                            .size(20.dp * scale)
+                                            .background(
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                                                shape = CircleShape
+                                            )
+                                    )
+                                    
+                                    // 麦克风图标
+                                    Icon(
+                                        imageVector = Icons.Default.Mic,
+                                        contentDescription = "实时对话中",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -472,55 +538,153 @@ fun ChatScreen(
                         }
                     }
                     
-                    // 语音模式切换按钮
-                    val voiceMode by viewModel.voiceMode.collectAsState()
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Start
-                    ) {
-                        FilterChip(
-                            selected = voiceMode == com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME,
-                            onClick = { viewModel.toggleVoiceMode() },
-                            label = {
-                                Text(
-                                    text = when (voiceMode) {
-                                        com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
-                                            "🎤 简单模式"
-                                        com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
-                                            "🔊 实时对话"
+                    // 豆包实时对话模式专属UI
+                    if (isRealtimeMode) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "🎙️",
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                        Text(
+                                            text = "豆包端到端实时对话",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                        )
+                                    }
+                                    
+                                    // 录音状态指示
+                                    if (isRecording) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .background(
+                                                        color = androidx.compose.ui.graphics.Color.Red,
+                                                        shape = androidx.compose.foundation.shape.CircleShape
+                                                    )
+                                            )
+                                            Text(
+                                                text = "录音中",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = androidx.compose.ui.graphics.Color.Red
+                                            )
+                                        }
+                                    }
+                                }
+                                
+                                // 控制按钮
+                                Button(
+                                    onClick = {
+                                        if (isRecording) {
+                                            viewModel.stopDoubaoRealtimeConversation()
+                                        } else {
+                                            viewModel.startDoubaoRealtimeConversation()
+                                        }
                                     },
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = when (voiceMode) {
-                                        com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isRecording) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        }
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = if (isRecording) {
+                                            Icons.Default.Stop
+                                        } else {
                                             Icons.Default.Mic
-                                        com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
-                                            Icons.Default.Image  // 用作音频波形的占位符
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
+                                        },
+                                        contentDescription = null
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (isRecording) "停止对话" else "开始对话"
+                                    )
+                                }
+                                
+                                Text(
+                                    text = "超低延迟 • 自然对话 • 支持打断",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
                                 )
                             }
-                        )
-                        
-                        Spacer(modifier = Modifier.width(8.dp))
-                        
-                        Text(
-                            text = when (voiceMode) {
-                                com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
-                                    "语音识别模式"
-                                com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
-                                    "端到端语音对话"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        }
+                    } else {
+                        // 语音模式切换按钮（普通模式）
+                        val voiceMode by viewModel.voiceMode.collectAsState()
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Start
+                        ) {
+                            FilterChip(
+                                selected = voiceMode == com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME,
+                                onClick = { viewModel.toggleVoiceMode() },
+                                label = {
+                                    Text(
+                                        text = when (voiceMode) {
+                                            com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
+                                                "🎤 简单模式"
+                                            com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
+                                                "🔊 实时对话"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = when (voiceMode) {
+                                            com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
+                                                Icons.Default.Mic
+                                            com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
+                                                Icons.Default.Image  // 用作音频波形的占位符
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            )
+                            
+                            Spacer(modifier = Modifier.width(8.dp))
+                            
+                            Text(
+                                text = when (voiceMode) {
+                                    com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
+                                        "语音识别模式"
+                                    com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
+                                        "端到端语音对话"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                     
                     Row(
@@ -530,23 +694,8 @@ fun ChatScreen(
                         // 文档上传按钮（回形针图标）
                         IconButton(
                             onClick = {
-                                // 检查权限
-                                val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                    Manifest.permission.READ_MEDIA_IMAGES
-                                } else {
-                                    Manifest.permission.READ_EXTERNAL_STORAGE
-                                }
-                                
-                                when (PackageManager.PERMISSION_GRANTED) {
-                                    ContextCompat.checkSelfPermission(context, permission) -> {
-                                        // 有权限，直接打开文档选择器
-                                        documentPickerLauncher.launch("*/*")
-                                    }
-                                    else -> {
-                                        // 请求权限
-                                        permissionLauncher.launch(permission)
-                                    }
-                                }
+                                // 文档选择器使用 SAF，不需要权限检查，直接打开
+                                documentPickerLauncher.launch("*/*")
                             }
                         ) {
                             Icon(
@@ -878,10 +1027,8 @@ fun MessageBubble(
                     message = message,
                     onToggleText = onToggleVoiceText
                 )
-                // 如果有语音，且文字没有展开，就不显示下面的文字气泡
-                if (message.isTextExpanded) {
-                    return@Column
-                }
+                // 如果有语音消息，就不再显示下面的文字气泡（语音气泡内部已经包含了展开的文字）
+                return@Column
             }
         }
         // 图片气泡（如果有图片）- 高性能缓存版本

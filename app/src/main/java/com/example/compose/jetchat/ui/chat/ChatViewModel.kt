@@ -14,7 +14,9 @@ import com.example.compose.jetchat.data.summary.ConversationSummaryManager
 import com.example.compose.jetchat.data.voice.VoiceRealtimeService
 import com.example.compose.jetchat.data.voice.VoiceTTSService
 import com.example.compose.jetchat.data.voice.CloudVoiceRecognizer
+import com.example.compose.jetchat.data.voice.DoubaoRealtimeService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +33,7 @@ class ChatViewModel(
     private val sessionId: String,
     private val chatDao: ChatDao,
     private val summaryDao: SessionSummaryDao,
+    private val isRealtimeMode: Boolean = false,
     private val apiService: ApiService = ApiService.instance
 ) : AndroidViewModel(application) {
     
@@ -43,6 +46,13 @@ class ChatViewModel(
     // 语音服务
     private val voiceService = VoiceRealtimeService() // WebSocket 实时对话（目前不可用）
     private val voiceTTSService = VoiceTTSService(cloudVoiceRecognizer) // TTS 语音对话（推荐）
+    
+    // 豆包端到端实时对话服务
+    private val doubaoRealtimeService = if (isRealtimeMode) {
+        DoubaoRealtimeService(application.applicationContext)
+    } else {
+        null
+    }
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
@@ -65,6 +75,12 @@ class ChatViewModel(
     val snackbarMessage: StateFlow<String> = _snackbarMessage.asStateFlow()
 
     private var messageIdCounter = 0L
+    
+    // 语音识别监听器的 Job，用于取消旧的监听器
+    private var voiceRecognitionJob: Job? = null
+    
+    // 防抖：记录上次发送的语音内容，避免重复发送
+    private var lastVoiceTranscription: String = ""
 
     init {
         // 从数据库加载历史消息
@@ -131,6 +147,25 @@ class ChatViewModel(
                     
                     // 发送多轮对话请求，传入当前用户输入用于判断是否生成图片
                     apiService.sendChatRequestWithHistory(conversationHistory, content, imageBase64)
+                }
+                
+                // 🎙️ 实时对话模式：获取文本回复后，调用TTS转语音
+                if (isRealtimeMode && apiResponse.text.isNotEmpty()) {
+                    launch {
+                        try {
+                            android.util.Log.d("ChatViewModel", "🎙️ 实时模式: 调用TTS转语音")
+                            val ttsAudioFile = withContext(Dispatchers.IO) {
+                                voiceTTSService.textToSpeech(apiResponse.text)
+                            }
+                            if (ttsAudioFile != null) {
+                                android.util.Log.d("ChatViewModel", "✓ TTS生成成功: ${ttsAudioFile.absolutePath}")
+                            } else {
+                                android.util.Log.w("ChatViewModel", "⚠ TTS生成失败，返回null")
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatViewModel", "TTS失败: ${e.message}")
+                        }
+                    }
                 }
                 
                 // 检查是否需要生成摘要（后台异步进行，不阻塞）
@@ -372,6 +407,9 @@ class ChatViewModel(
     fun startVoiceRecording() {
         android.util.Log.d("ChatViewModel", "开始语音录音，模式: ${_voiceMode.value}")
         
+        // 清空上次记录，为新的识别做准备
+        lastVoiceTranscription = ""
+        
         viewModelScope.launch {
             _isVoiceRecording.value = true
             
@@ -407,6 +445,134 @@ class ChatViewModel(
         _snackbarMessage.value = "已切换到：$modeName"
         
         android.util.Log.d("ChatViewModel", "语音模式已切换: ${_voiceMode.value}")
+    }
+    
+    /**
+     * 启动豆包端到端实时对话
+     */
+    fun startDoubaoRealtimeConversation(
+        botName: String = "豆包",
+        systemRole: String = "",
+        speakingStyle: String = ""
+    ) {
+        // 取消之前的监听器，避免重复发送
+        voiceRecognitionJob?.cancel()
+        
+        voiceRecognitionJob = viewModelScope.launch {
+            doubaoRealtimeService?.let { service ->
+                android.util.Log.d("ChatViewModel", "启动豆包端到端实时对话")
+                
+                service.startRealtimeConversation(botName, systemRole, speakingStyle)
+                
+                // 监听录音状态
+                launch {
+                    service.isRecording.collect { isRecording ->
+                        _isVoiceRecording.value = isRecording
+                    }
+                }
+                
+                // 监听连接状态
+                launch {
+                    service.connectionState.collect { state ->
+                        _snackbarMessage.value = state
+                    }
+                }
+                
+                // 监听ASR识别结果（用户说话），直接渲染为用户消息
+                launch {
+                    service.userSpeechCompleted.collect { finalText ->
+                        if (finalText != null && finalText.isNotEmpty() && finalText != lastVoiceTranscription) {
+                            lastVoiceTranscription = finalText
+                            android.util.Log.d("ChatViewModel", "✓ 豆包-用户说话: $finalText")
+                            
+                            // 添加用户消息气泡（右边）
+                            val userMessage = ChatMessage(
+                                id = messageIdCounter++,
+                                sessionId = sessionId,
+                                role = MessageRole.USER,
+                                content = finalText,
+                                status = MessageStatus.SENT
+                            )
+                            _messages.value = _messages.value + listOf(userMessage)
+                            
+                            // 保存到数据库
+                            viewModelScope.launch {
+                                withContext(Dispatchers.IO) {
+                                    val existingMessages = chatDao.getMessagesBySessionId(sessionId).filter { it.role != "system" }
+                                    val shouldSetNewTitle = existingMessages.isEmpty() || existingMessages.first().sessionTitle == "新对话"
+                                    
+                                    if (shouldSetNewTitle) {
+                                        val sessionTitle = "🎙️ ${finalText.take(10)}"
+                                        chatDao.insertMessage(userMessage.toEntity().copy(sessionTitle = sessionTitle, isPinned = false))
+                                        if (existingMessages.isNotEmpty()) {
+                                            chatDao.updateSessionTitle(sessionId, sessionTitle)
+                                        }
+                                    } else {
+                                        val firstMessage = existingMessages.first()
+                                        chatDao.insertMessage(userMessage.toEntity().copy(
+                                            sessionTitle = firstMessage.sessionTitle,
+                                            isPinned = firstMessage.isPinned
+                                        ))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // 监听AI回复，直接渲染为AI消息
+                launch {
+                    service.aiResponseCompleted.collect { aiText ->
+                        if (aiText != null && aiText.isNotEmpty()) {
+                            android.util.Log.d("ChatViewModel", "✓ 豆包-AI回复: $aiText")
+                            
+                            // 添加AI消息气泡（左边），带打字机效果
+                            val aiMessageId = messageIdCounter++
+                            val aiMessage = ChatMessage(
+                                id = aiMessageId,
+                                sessionId = sessionId,
+                                role = MessageRole.ASSISTANT,
+                                content = "",
+                                status = MessageStatus.SENT
+                            )
+                            _messages.value = _messages.value + listOf(aiMessage)
+                            
+                            // 打字机效果
+                            val typingSpeed = 30L
+                            aiText.forEachIndexed { index, _ ->
+                                kotlinx.coroutines.delay(typingSpeed)
+                                val currentText = aiText.substring(0, index + 1)
+                                _messages.value = _messages.value.map { msg ->
+                                    if (msg.id == aiMessageId) msg.copy(content = currentText) else msg
+                                }
+                            }
+                            
+                            // 保存到数据库
+                            val finalAiMessage = _messages.value.find { it.id == aiMessageId }!!.copy(content = aiText)
+                            viewModelScope.launch {
+                                withContext(Dispatchers.IO) {
+                                    val existingMessages = chatDao.getMessagesBySessionId(sessionId).filter { it.role != "system" }
+                                    val firstMessage = existingMessages.first()
+                                    chatDao.insertMessage(finalAiMessage.toEntity().copy(
+                                        sessionTitle = firstMessage.sessionTitle,
+                                        isPinned = firstMessage.isPinned
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                }
+            } ?: run {
+                _snackbarMessage.value = "当前不是实时对话模式"
+            }
+        }
+    }
+    
+    /**
+     * 停止豆包端到端实时对话
+     */
+    fun stopDoubaoRealtimeConversation() {
+        doubaoRealtimeService?.stopRealtimeConversation()
     }
     
     /**
@@ -447,7 +613,10 @@ class ChatViewModel(
      * 不依赖设备本地语音识别引擎，直接调用云端 Whisper API
      */
     private fun startCloudVoiceRecognition() {
-        viewModelScope.launch {
+        // 取消之前的监听器，避免重复发送
+        voiceRecognitionJob?.cancel()
+        
+        voiceRecognitionJob = viewModelScope.launch {
             android.util.Log.d("ChatViewModel", "启动云端语音识别（Whisper API）...")
             
             // 开始录音
@@ -460,12 +629,16 @@ class ChatViewModel(
                 }
             }
             
-            // 监听识别结果
+            // 监听识别结果，直接发送
             launch {
                 cloudVoiceRecognizer.transcription.collect { transcription ->
-                    if (transcription.isNotEmpty()) {
+                    if (transcription.isNotEmpty() && transcription != lastVoiceTranscription) {
+                        lastVoiceTranscription = transcription
                         _voiceTranscription.value = transcription
-                        android.util.Log.d("ChatViewModel", "✓ 云端识别结果: $transcription")
+                        android.util.Log.d("ChatViewModel", "✓ 简单模式-识别结果: $transcription")
+                        // 直接发送消息
+                        sendMessage(transcription)
+                        _voiceTranscription.value = ""
                     }
                 }
             }
@@ -558,17 +731,6 @@ class ChatViewModel(
             }
             
             _isVoiceRecording.value = false
-            
-            // 如果有转录结果（简单模式），作为文本消息发送
-            // 注意：实时模式已经在上面处理了消息，不需要再次发送
-            if (_voiceMode.value == com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE) {
-                val transcription = _voiceTranscription.value
-                if (transcription.isNotEmpty()) {
-                    android.util.Log.d("ChatViewModel", "发送转录文本: $transcription")
-                    sendMessage(transcription)
-                    _voiceTranscription.value = ""
-                }
-            }
         }
     }
     
@@ -702,12 +864,13 @@ class ChatViewModelFactory(
     private val application: Application,
     private val sessionId: String,
     private val chatDao: ChatDao,
-    private val summaryDao: SessionSummaryDao
+    private val summaryDao: SessionSummaryDao,
+    private val isRealtimeMode: Boolean = false
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(ChatViewModel::class.java)) {
-            return ChatViewModel(application, sessionId, chatDao, summaryDao) as T
+            return ChatViewModel(application, sessionId, chatDao, summaryDao, isRealtimeMode) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
