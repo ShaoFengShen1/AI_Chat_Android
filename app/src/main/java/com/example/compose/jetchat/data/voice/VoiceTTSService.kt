@@ -102,6 +102,14 @@ class VoiceTTSService(
     }
     
     /**
+     * 停止录音（不进行识别）
+     */
+    fun stopRecording() {
+        _isRecording.value = false
+        Log.d(TAG, "停止录音")
+    }
+    
+    /**
      * 停止录音并处理对话
      * 
      * @param onChatResponse 回调函数，返回 Pair(文本回复, 图片Base64)

@@ -49,6 +49,12 @@ class CloudVoiceRecognizer(private val context: Context) {
     private var isRecording = false
     private var recordingFile: File? = null
     
+    // 保存最后一次识别结果
+    private var lastRecognitionResult: String? = null
+    private var lastAudioPath: String? = null
+    private var lastAudioDuration: Long = 0L
+    private var recordingStartTime: Long = 0L
+    
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening
     
@@ -102,6 +108,7 @@ class CloudVoiceRecognizer(private val context: Context) {
             isRecording = true
             _isListening.value = true
             _error.value = null
+            recordingStartTime = System.currentTimeMillis()
             
             Log.d(TAG, "✓ 开始录音: ${recordingFile?.name}")
             
@@ -156,6 +163,10 @@ class CloudVoiceRecognizer(private val context: Context) {
             
             if (transcriptionText.isNotEmpty()) {
                 _transcription.value = transcriptionText
+                // 保存识别结果
+                lastRecognitionResult = transcriptionText
+                lastAudioPath = file.absolutePath
+                lastAudioDuration = System.currentTimeMillis() - recordingStartTime
                 Log.d(TAG, "✓ 识别成功: $transcriptionText")
             } else {
                 _error.value = "识别结果为空"
@@ -420,6 +431,21 @@ class CloudVoiceRecognizer(private val context: Context) {
         
         Log.d(TAG, "✓ 录音已取消")
     }
+    
+    /**
+     * 获取最后一次识别结果
+     */
+    fun getLastRecognitionResult(): String? = lastRecognitionResult
+    
+    /**
+     * 获取最后一次录音文件路径
+     */
+    fun getLastAudioPath(): String? = lastAudioPath
+    
+    /**
+     * 获取最后一次录音时长（毫秒）
+     */
+    fun getLastAudioDuration(): Long = lastAudioDuration
     
     /**
      * 清理资源

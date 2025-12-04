@@ -65,6 +65,13 @@ android {
         }
     }
 
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName = 
+                "jimengminichat.apk"
+        }
+    }
+
     kotlinOptions {
         jvmTarget = "17"
     }
@@ -123,6 +130,9 @@ dependencies {
 
     // Image Loading
     implementation("io.coil-kt:coil-compose:2.5.0")
+    
+    // PDF Processing
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 

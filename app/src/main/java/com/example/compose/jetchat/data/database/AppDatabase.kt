@@ -10,7 +10,7 @@ import androidx.room.RoomDatabase
  */
 @Database(
     entities = [ChatMessageEntity::class, SessionSummaryEntity::class],
-    version = 7,  // 升级版本以支持语音消息字段
+    version = 8,  // 升级版本以支持图片描述字段(防止多模态幻觉)
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

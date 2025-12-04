@@ -30,7 +30,7 @@ object AppConfig {
      * 当前使用: gemini-2.5-pro (对话) 和 dall-e-3 (图片生成)
      */
     const val CHAT_MODEL = "gemini-2.5-pro"  // 对话模型
-    const val IMAGE_MODEL = "dall-e-3"  // 图片生成模型
+    const val IMAGE_MODEL = "doubao-seedream-3-0-t2i-250415"  // 图片生成模型
     const val INTENT_MODEL = "gemini-2.5-pro"  // 意图识别模型（轻量快速）
     const val VOICE_MODEL = "gpt-4o-mini-realtime-preview"  // 语音对话模型（mini版，更经济实惠）
     const val WHISPER_MODEL = "whisper-1"  // 语音转文字模型（云端识别，类似微信/QQ）
@@ -90,7 +90,7 @@ object AppConfig {
     /**
      * 当前语音对话模式（可在 UI 中切换）
      */
-    var VOICE_MODE = VoiceMode.SIMPLE  // 默认简单模式
+    var VOICE_MODE = VoiceMode.REALTIME  // 默认实时模式（简单模式已禁用）
     
     /**
      * 豆包端到端实时语音对话配置

@@ -78,12 +78,16 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
         .pingInterval(AppConfig.WEBSOCKET_PING_INTERVAL_MS, TimeUnit.MILLISECONDS)
         .build()
     
+    // 统一管理协程生命周期，防止悬空引用
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    
     private var webSocket: WebSocket? = null
-    private var audioRecord: AudioRecord? = null
-    private var audioTrack: AudioTrack? = null
+    @Volatile private var audioRecord: AudioRecord? = null
+    @Volatile private var audioTrack: AudioTrack? = null
     
     private var recordingJob: Job? = null
     private var playbackJob: Job? = null
+    private val audioTrackLock = Any()  // 同步锁，防止并发访问
     
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording
@@ -337,8 +341,10 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
         ) * 2
         
         try {
+            // 使用VOICE_COMMUNICATION启用硬件回声消除(AEC)
+            @Suppress("MissingPermission")
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE_16K,
                 CHANNEL_IN,
                 ENCODING_16BIT,
@@ -348,10 +354,16 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
             audioRecord?.startRecording()
             _isRecording.value = true
             
-            recordingJob = CoroutineScope(Dispatchers.IO).launch {
+            recordingJob = serviceScope.launch {
                 val buffer = ByteArray(640)  // 20ms 音频 = 640字节
                 
                 while (isActive && _isRecording.value) {
+                    // 如果正在播放AI语音,跳过录音以避免回声
+                    if (_isPlaying.value) {
+                        delay(50)
+                        continue
+                    }
+                    
                     val bytesRead = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                     
                     if (bytesRead > 0) {
@@ -401,9 +413,10 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
         ) * 2
         
         try {
+            // 使用VOICE_COMMUNICATION优先路由到耳机,减少扬声器回声
             audioTrack = AudioTrack(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
                 AudioFormat.Builder()
@@ -419,13 +432,43 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
             audioTrack?.play()
             _isPlaying.value = true
             
-            playbackJob = CoroutineScope(Dispatchers.IO).launch {
-                while (isActive) {
+            playbackJob = serviceScope.launch {
+                var idleCount = 0
+                var shouldStop = false
+                while (isActive && !shouldStop) {
                     val audioData = audioQueue.poll()
                     if (audioData != null) {
-                        audioTrack?.write(audioData, 0, audioData.size)
+                        // 🔒 同步访问 audioTrack，防止 SIGSEGV
+                        val writeSuccess = synchronized(audioTrackLock) {
+                            val track = audioTrack
+                            if (track != null && track.state == AudioTrack.STATE_INITIALIZED) {
+                                try {
+                                    track.write(audioData, 0, audioData.size)
+                                    true
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "音频写入失败: ${e.message}")
+                                    false
+                                }
+                            } else {
+                                Log.w(TAG, "AudioTrack 不可用，停止播放")
+                                false
+                            }
+                        }
+                        
+                        if (writeSuccess) {
+                            idleCount = 0
+                            _isPlaying.value = true
+                        } else {
+                            shouldStop = true
+                        }
                     } else {
                         delay(10)
+                        idleCount++
+                        // 如果队列空闲超过500ms,认为播放完成
+                        if (idleCount > 50) {
+                            _isPlaying.value = false
+                            idleCount = 0
+                        }
                     }
                 }
             }
@@ -442,10 +485,14 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
     private fun stopAudioPlayback() {
         _isPlaying.value = false
         playbackJob?.cancel()
+        playbackJob = null
         
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
+        // 🔒 同步释放 audioTrack，防止并发访问崩溃
+        synchronized(audioTrackLock) {
+            audioTrack?.stop()
+            audioTrack?.release()
+            audioTrack = null
+        }
         
         audioQueue.clear()
         
@@ -649,13 +696,29 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
      * 清理资源
      */
     private fun cleanup() {
+        Log.d(TAG, "cleanup: 清理所有资源")
+        
+        // 停止录音和播放
         stopAudioRecording()
         stopAudioPlayback()
         
-        webSocket = null
-        isSessionActive = false
+        // 🔥 取消所有协程（统一管理）
+        serviceScope.cancel()
         
+        // 关闭WebSocket
+        webSocket?.close(1000, "cleanup")
+        webSocket = null
+        
+        // 重置状态
+        isSessionActive = false
+        _isRecording.value = false
+        _isPlaying.value = false
+        
+        // 清空所有StateFlow
         _transcription.value = ""
         _responseText.value = ""
+        _connectionState.value = ""
+        _userSpeechCompleted.value = null
+        _aiResponseCompleted.value = null
     }
 }

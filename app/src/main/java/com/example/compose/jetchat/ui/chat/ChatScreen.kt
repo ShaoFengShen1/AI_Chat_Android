@@ -92,6 +92,21 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current  // 用于控制键盘
+    
+    // 确保每次进入聊天页面时都能正确加载消息
+    LaunchedEffect(sessionId) {
+        android.util.Log.d("ChatScreen", "进入会话: $sessionId, 当前消息数: ${messages.size}")
+        // 等待一小段时间让ViewModel.init完成数据库读取
+        kotlinx.coroutines.delay(150)
+        
+        // 如果延迟后消息仍然为空,强制重新加载
+        if (messages.isEmpty()) {
+            android.util.Log.d("ChatScreen", "消息为空,强制重新加载")
+            viewModel.reloadMessages()
+            kotlinx.coroutines.delay(200) // 等待重新加载完成
+        }
+        android.util.Log.d("ChatScreen", "最终消息数: ${messages.size}")
+    }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var selectedImageBase64 by remember { mutableStateOf<String?>(null) }
     var showPermissionDialog by remember { mutableStateOf(false) }
@@ -106,6 +121,9 @@ fun ChatScreen(
     val isRecognizing by viewModel.isVoiceRecognizing.collectAsState()
     val voiceTranscription by viewModel.voiceTranscription.collectAsState()
     var showMicrophonePermissionDialog by remember { mutableStateOf(false) }
+    
+    // 🔴 AI 回复状态
+    val isSending by viewModel.isSending.collectAsState()
     
     // 豆包实时对话状态
     var isDoubaoRealtimeActive by remember { mutableStateOf(false) }
@@ -139,16 +157,54 @@ fun ChatScreen(
     ) { uri: Uri? ->
         uri?.let { 
             selectedImageUri = it
-            // 将图片转换为 base64
+            // 将图片压缩并转换为 base64
             try {
                 val inputStream: InputStream? = context.contentResolver.openInputStream(it)
                 inputStream?.use { stream ->
-                    val bytes = stream.readBytes()
-                    selectedImageBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                    android.util.Log.d("ChatScreen", "图片已转换为 base64，大小: ${bytes.size} bytes")
+                    // 解码图片
+                    val originalBitmap = android.graphics.BitmapFactory.decodeStream(stream)
+                    
+                    if (originalBitmap != null) {
+                        // 计算压缩后的尺寸 (最大边不超过1920px)
+                        val maxSize = 1920
+                        val scale = if (originalBitmap.width > originalBitmap.height) {
+                            if (originalBitmap.width > maxSize) maxSize.toFloat() / originalBitmap.width else 1f
+                        } else {
+                            if (originalBitmap.height > maxSize) maxSize.toFloat() / originalBitmap.height else 1f
+                        }
+                        
+                        val newWidth = (originalBitmap.width * scale).toInt()
+                        val newHeight = (originalBitmap.height * scale).toInt()
+                        
+                        // 缩放图片
+                        val scaledBitmap = if (scale < 1f) {
+                            android.graphics.Bitmap.createScaledBitmap(originalBitmap, newWidth, newHeight, true)
+                        } else {
+                            originalBitmap
+                        }
+                        
+                        // 压缩为JPEG (质量75%)
+                        val outputStream = java.io.ByteArrayOutputStream()
+                        scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, outputStream)
+                        val compressedBytes = outputStream.toByteArray()
+                        
+                        selectedImageBase64 = Base64.encodeToString(compressedBytes, Base64.NO_WRAP)
+                        
+                        android.util.Log.d("ChatScreen", "图片已压缩: 原始尺寸=${originalBitmap.width}x${originalBitmap.height}, " +
+                                "压缩后尺寸=${newWidth}x${newHeight}, " +
+                                "压缩后大小=${compressedBytes.size} bytes")
+                        
+                        // 释放Bitmap
+                        if (scaledBitmap != originalBitmap) {
+                            scaledBitmap.recycle()
+                        }
+                        originalBitmap.recycle()
+                    } else {
+                        android.util.Log.e("ChatScreen", "无法解码图片")
+                    }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("ChatScreen", "图片转换失败: ${e.message}", e)
+                android.util.Log.e("ChatScreen", "图片处理失败: ${e.message}", e)
             }
         }
     }
@@ -174,21 +230,67 @@ fun ChatScreen(
                 // 读取文档内容
                 val inputStream: InputStream? = context.contentResolver.openInputStream(it)
                 inputStream?.use { stream ->
-                    val bytes = stream.readBytes()
-                    // 对于文本文件，直接读取内容
-                    // 对于其他文件，使用 base64 编码
                     val fileName = selectedDocumentName ?: ""
-                    if (fileName.endsWith(".txt", ignoreCase = true)) {
-                        selectedDocumentContent = String(bytes)
+                    
+                    // 初始化DocumentProcessor
+                    com.example.compose.jetchat.data.utils.DocumentProcessor.initialize(context)
+                    
+                    // 尝试提取文本内容
+                    val extractedText = com.example.compose.jetchat.data.utils.DocumentProcessor.extractText(
+                        fileName, 
+                        stream
+                    )
+                    
+                    if (extractedText != null) {
+                        // 成功提取文本
+                        val truncatedText = com.example.compose.jetchat.data.utils.DocumentProcessor.truncateText(extractedText)
+                        selectedDocumentContent = "TEXT:$truncatedText"
+                        android.util.Log.d("ChatScreen", "文档文本提取成功: $fileName, 长度: ${extractedText.length} 字符")
+                        
+                        // 显示成功提示
+                        android.widget.Toast.makeText(
+                            context,
+                            "✓ 文档已选择: $fileName",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
                     } else {
-                        selectedDocumentContent = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                        // 无法提取文本，使用base64编码
+                        val bytes = context.contentResolver.openInputStream(it)?.readBytes()
+                        if (bytes != null) {
+                            selectedDocumentContent = when {
+                                fileName.endsWith(".pdf", ignoreCase = true) -> {
+                                    "PDF_BASE64:${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+                                }
+                                fileName.endsWith(".doc", ignoreCase = true) || 
+                                fileName.endsWith(".docx", ignoreCase = true) -> {
+                                    "DOC_BASE64:${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+                                }
+                                else -> {
+                                    "FILE_BASE64:${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+                                }
+                            }
+                            android.util.Log.d("ChatScreen", "文档已编码: $fileName, 大小: ${bytes.size} bytes")
+                            
+                            // 显示成功提示
+                            android.widget.Toast.makeText(
+                                context,
+                                "✓ 文档已选择: $fileName",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     }
-                    android.util.Log.d("ChatScreen", "文档已读取: $fileName, 大小: ${bytes.size} bytes")
                 }
             } catch (e: Exception) {
                 android.util.Log.e("ChatScreen", "文档读取失败: ${e.message}", e)
                 selectedDocumentName = null
                 selectedDocumentContent = null
+                
+                // 显示错误提示
+                android.widget.Toast.makeText(
+                    context,
+                    "✗ 文档读取失败",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }
@@ -644,28 +746,20 @@ fun ChatScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Start
                         ) {
+                            // 🔥 简单模式已禁用，仅显示当前模式
                             FilterChip(
-                                selected = voiceMode == com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME,
-                                onClick = { viewModel.toggleVoiceMode() },
+                                selected = true,
+                                onClick = { /* 模式切换已禁用 */ },
+                                enabled = false,
                                 label = {
                                     Text(
-                                        text = when (voiceMode) {
-                                            com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
-                                                "🎤 简单模式"
-                                            com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
-                                                "🔊 实时对话"
-                                        },
+                                        text = "🔊 实时对话",
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                 },
                                 leadingIcon = {
                                     Icon(
-                                        imageVector = when (voiceMode) {
-                                            com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
-                                                Icons.Default.Mic
-                                            com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
-                                                Icons.Default.Image  // 用作音频波形的占位符
-                                        },
+                                        imageVector = Icons.Default.Image,
                                         contentDescription = null,
                                         modifier = Modifier.size(16.dp)
                                     )
@@ -675,12 +769,7 @@ fun ChatScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             
                             Text(
-                                text = when (voiceMode) {
-                                    com.example.compose.jetchat.config.AppConfig.VoiceMode.SIMPLE -> 
-                                        "语音识别模式"
-                                    com.example.compose.jetchat.config.AppConfig.VoiceMode.REALTIME -> 
-                                        "端到端语音对话"
-                                },
+                                text = "端到端语音对话",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -765,8 +854,24 @@ fun ChatScreen(
                         
                         Spacer(modifier = Modifier.width(8.dp))
                         
-                        // 麦克风按钮 / 发送按钮
-                        if (inputText.isBlank() && selectedImageBase64 == null && selectedDocumentContent == null) {
+                        // 🔴 AI 回复时强制显示停止按钮，否则显示麦克风/发送按钮
+                        if (isSending) {
+                            // 🔴 AI 正在回复，显示红色停止按钮
+                            FilledIconButton(
+                                onClick = {
+                                    viewModel.stopCurrentConversation()
+                                },
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Stop,
+                                    contentDescription = "停止对话",
+                                    tint = MaterialTheme.colorScheme.onError
+                                )
+                            }
+                        } else if (inputText.isBlank() && selectedImageBase64 == null && selectedDocumentContent == null) {
                             // 显示麦克风按钮或识别中的加载图标
                             FilledIconButton(
                                 onClick = {
@@ -945,7 +1050,7 @@ fun VoiceMessageBubble(
                 }
                 
                 Text(
-                    text = "${audioDuration}\"",
+                    text = "${audioDuration}''",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (isUser) Color.White else Color(0xFF2F2F2F)
                 )
@@ -1027,10 +1132,9 @@ fun MessageBubble(
                     message = message,
                     onToggleText = onToggleVoiceText
                 )
-                // 如果有语音消息，就不再显示下面的文字气泡（语音气泡内部已经包含了展开的文字）
-                return@Column
             }
         }
+        
         // 图片气泡（如果有图片）- 高性能缓存版本
         message.imageBase64?.let { base64 ->
             // 使用 ImageCache 异步解码并缓存，避免重复解码
@@ -1115,7 +1219,9 @@ fun MessageBubble(
         }
         
         // 文字气泡（如果有文字或者是加载/错误状态）
-        if (message.content.isNotBlank() || message.status == MessageStatus.LOADING || message.status == MessageStatus.ERROR) {
+        // 🔥 如果有语音消息，就不显示独立的文字气泡（文字在"转文字"功能中）
+        val hasVoice = message.audioFilePath != null && message.audioDuration != null
+        if (!hasVoice && (message.content.isNotBlank() || message.status == MessageStatus.LOADING || message.status == MessageStatus.ERROR)) {
             Column(
                 horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
             ) {

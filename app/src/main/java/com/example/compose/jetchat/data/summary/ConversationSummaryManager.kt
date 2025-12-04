@@ -119,6 +119,9 @@ class ConversationSummaryManager(
     
     /**
      * 获取用于发送 API 的消息列表（包含摘要）
+     * 核心功能：实现图片降维，防止多模态幻觉
+     * - 历史图片：转换为文本描述(imageDescription)
+     * - 当前图片：保持Base64数据(在ChatViewModel中单独处理)
      */
     suspend fun getMessagesWithSummary(
         sessionId: String,
@@ -134,19 +137,34 @@ class ConversationSummaryManager(
             if (summary != null) {
                 result.add("system" to "以下是之前的对话摘要：\n${summary.summary}")
                 
-                // 2. 添加摘要之后的所有消息
+                // 2. 添加摘要之后的所有消息(图片降维处理)
                 val recentMessages = messages.filter { it.id > summary.lastSummarizedMessageId }
-                recentMessages.forEach {
-                    result.add(it.role to it.content)
+                recentMessages.forEach { msg ->
+                    // 关键：将历史图片降维为文本描述
+                    val contentWithImageDowngrade = if (msg.imageBase64 != null) {
+                        val imageDesc = msg.imageDescription ?: "[用户发送了一张图片,无描述]"
+                        val roleLabel = if (msg.role == "user") "用户" else "AI"
+                        "[$roleLabel${if (msg.role == "user") "发送" else "生成"}了一张图片: $imageDesc]\n${msg.content}"
+                    } else {
+                        msg.content
+                    }
+                    result.add(msg.role to contentWithImageDowngrade)
                 }
             } else {
-                // 没有摘要，添加所有历史消息（第 1-9 轮都会完整发送）
-                messages.forEach {
-                    result.add(it.role to it.content)
+                // 没有摘要，添加所有历史消息(第 1-9 轮，同样需要图片降维)
+                messages.forEach { msg ->
+                    val contentWithImageDowngrade = if (msg.imageBase64 != null) {
+                        val imageDesc = msg.imageDescription ?: "[用户发送了一张图片,无描述]"
+                        val roleLabel = if (msg.role == "user") "用户" else "AI"
+                        "[$roleLabel${if (msg.role == "user") "发送" else "生成"}了一张图片: $imageDesc]\n${msg.content}"
+                    } else {
+                        msg.content
+                    }
+                    result.add(msg.role to contentWithImageDowngrade)
                 }
             }
             
-            // 3. 添加当前用户消息
+            // 3. 添加当前用户消息(注意：当前消息的图片不在这里处理，在ChatViewModel中单独添加)
             result.add("user" to newUserMessage)
             
             android.util.Log.d("SummaryManager", "发送消息数：${result.size}，有摘要：${summary != null}")
@@ -187,7 +205,7 @@ class ConversationSummaryManager(
 suspend fun ApiService.sendSummaryRequest(conversationText: String): String {
     return withContext(Dispatchers.IO) {
         try {
-            // 使用聊天模型生成摘要
+            // 🔥 直接调用聊天 API，绕过意图识别（摘要不需要意图识别）
             val summaryPrompt = """
 ${ConversationSummaryManager.SUMMARY_SYSTEM_PROMPT}
 
@@ -197,7 +215,12 @@ $conversationText
 请生成摘要：
 """
             
-            val response = sendChatRequest(summaryPrompt, null)
+            // 直接发送请求，不经过意图识别
+            val conversationHistory = listOf(
+                Pair("user", summaryPrompt)
+            )
+            
+            val response = sendChatRequestWithHistory(conversationHistory, summaryPrompt, null)
             response.text
         } catch (e: Exception) {
             android.util.Log.e("ApiService", "生成摘要失败", e)

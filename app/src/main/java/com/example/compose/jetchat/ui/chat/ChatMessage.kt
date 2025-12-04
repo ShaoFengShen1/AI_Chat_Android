@@ -11,6 +11,7 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val status: MessageStatus = MessageStatus.SENT,
     val imageBase64: String? = null,  // 图片的 base64 编码
+    val imageDescription: String? = null,  // 图片的文本描述(用于上下文管理,防止多模态幻觉)
     val documentName: String? = null,  // 文档名称
     val documentContent: String? = null,  // 文档内容（base64 或文本）
     val audioFilePath: String? = null,  // 语音文件路径（本地文件）

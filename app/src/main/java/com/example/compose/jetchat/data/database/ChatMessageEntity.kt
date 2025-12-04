@@ -21,6 +21,7 @@ data class ChatMessageEntity(
     val sessionTitle: String = "新对话",  // 会话标题
     val isPinned: Boolean = false,  // 是否置顶
     val imageBase64: String? = null,  // 图片的 base64 编码
+    val imageDescription: String? = null,  // 图片的文本描述(用于上下文管理,防止多模态幻觉)
     val documentName: String? = null,  // 文档名称
     val documentContent: String? = null,  // 文档内容（base64 或文本）
     val audioFilePath: String? = null,  // 语音文件路径
@@ -46,6 +47,7 @@ fun ChatMessageEntity.toChatMessage(): ChatMessage {
             else -> MessageStatus.SENT
         },
         imageBase64 = this.imageBase64,
+        imageDescription = this.imageDescription,
         documentName = this.documentName,
         documentContent = this.documentContent,
         audioFilePath = this.audioFilePath,
@@ -71,6 +73,7 @@ fun ChatMessage.toEntity(): ChatMessageEntity {
             else -> "sent"
         },
         imageBase64 = this.imageBase64,
+        imageDescription = this.imageDescription,
         documentName = this.documentName,
         documentContent = this.documentContent,
         audioFilePath = this.audioFilePath,

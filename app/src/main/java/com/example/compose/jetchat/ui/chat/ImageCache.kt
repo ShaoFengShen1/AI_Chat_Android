@@ -27,6 +27,12 @@ object ImageCache {
      */
     suspend fun decodeBitmap(base64: String): Bitmap? = withContext(Dispatchers.Default) {
         try {
+            // 检查Base64字符串是否有效
+            if (base64.isEmpty()) {
+                android.util.Log.w("ImageCache", "Base64字符串为空")
+                return@withContext null
+            }
+            
             // 使用 Base64 的哈希作为缓存 key（避免存储大字符串）
             val cacheKey = base64.hashCode().toString()
             
@@ -37,21 +43,42 @@ object ImageCache {
             }
             
             // 缓存未命中，解码图片
-            android.util.Log.d("ImageCache", "解码图片并加入缓存")
+            android.util.Log.d("ImageCache", "解码图片并加入缓存 (Base64长度: ${base64.length})")
             val startTime = System.currentTimeMillis()
             
             val imageBytes = Base64.decode(base64, Base64.DEFAULT)
+            android.util.Log.d("ImageCache", "Base64解码完成，字节数: ${imageBytes.size}")
+            
             val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
             
+            if (bitmap == null) {
+                android.util.Log.e("ImageCache", "BitmapFactory解码失败，返回null")
+                return@withContext null
+            }
+            
             val decodeTime = System.currentTimeMillis() - startTime
-            android.util.Log.d("ImageCache", "图片解码耗时: ${decodeTime}ms")
+            android.util.Log.d("ImageCache", "图片解码成功: ${bitmap.width}x${bitmap.height}, 耗时: ${decodeTime}ms")
             
             // 加入缓存
-            bitmap?.let { bitmapCache.put(cacheKey, it) }
+            bitmapCache.put(cacheKey, bitmap)
             
             bitmap
+        } catch (e: IllegalArgumentException) {
+            android.util.Log.e("ImageCache", "Base64格式错误: ${e.message}", e)
+            null
+        } catch (e: OutOfMemoryError) {
+            android.util.Log.e("ImageCache", "内存不足，清理缓存后重试", e)
+            // 清理缓存后重试一次
+            bitmapCache.evictAll()
+            try {
+                val imageBytes = Base64.decode(base64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+            } catch (e2: Exception) {
+                android.util.Log.e("ImageCache", "重试失败", e2)
+                null
+            }
         } catch (e: Exception) {
-            android.util.Log.e("ImageCache", "图片解码失败", e)
+            android.util.Log.e("ImageCache", "图片解码异常: ${e.message}", e)
             null
         }
     }

@@ -158,7 +158,7 @@ class ApiService {
                         }
                     }
                     put("temperature", 0.3)  // 低温度，更确定的结果
-                    put("max_tokens", 300)
+                    put("max_tokens", 5000)  // 增加Token限制，防止JSON被截断
                 }
 
                 val request = Request.Builder()
