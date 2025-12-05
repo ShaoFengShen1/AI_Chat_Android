@@ -489,12 +489,20 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
         
         // 🔒 同步释放 audioTrack，防止并发访问崩溃
         synchronized(audioTrackLock) {
-            audioTrack?.stop()
-            audioTrack?.release()
+            audioTrack?.apply {
+                if (state != AudioTrack.STATE_UNINITIALIZED) {
+                    stop()
+                    flush()  // 清空缓冲区
+                }
+                release()
+            }
             audioTrack = null
         }
         
         audioQueue.clear()
+        
+        // ⏱️ 等待系统回收 AudioTrack 资源（避免第二次创建时延迟）
+        Thread.sleep(50)
         
         Log.d(TAG, "音频播放已停止")
     }

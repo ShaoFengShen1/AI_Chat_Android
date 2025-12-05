@@ -12,6 +12,7 @@ import com.example.compose.jetchat.data.database.AppDatabase
 import com.example.compose.jetchat.data.database.ChatMessageEntity
 import com.example.compose.jetchat.ui.chat.ChatScreen
 import com.example.compose.jetchat.ui.chatlist.ChatListScreen
+import com.example.compose.jetchat.ui.login.LoginScreen
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -25,8 +26,19 @@ fun JetchatApp() {
 
     NavHost(
         navController = navController,
-        startDestination = "chat_list"
+        startDestination = "login"
     ) {
+        // 登录页面
+        composable("login") {
+            LoginScreen(
+                onLoginSuccess = {
+                    navController.navigate("chat_list") {
+                        // 清空登录页面，防止返回
+                        popUpTo("login") { inclusive = true }
+                    }
+                }
+            )
+        }
         // 对话列表页面
         composable("chat_list") {
             val context = LocalContext.current

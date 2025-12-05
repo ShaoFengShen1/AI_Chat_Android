@@ -379,11 +379,24 @@ class CloudVoiceRecognizer(private val context: Context) {
             
         } catch (e: IOException) {
             Log.e(TAG, "✗ 网络请求失败: ${e.message}", e)
-            _error.value = "网络请求失败: ${e.message}"
+            
+            // 判断是否为连接超时或网络不通
+            val errorMsg = when {
+                e.message?.contains("failed to connect") == true -> 
+                    "外网访问繁忙，请稍后再试 🌐"
+                e.message?.contains("timeout") == true -> 
+                    "网络连接超时，请检查网络后重试 ⏱️"
+                e.message?.contains("Unable to resolve host") == true -> 
+                    "无法连接服务器，请检查网络 📡"
+                else -> 
+                    "网络请求失败，请稍后重试"
+            }
+            
+            _error.value = errorMsg
             return@withContext ""
         } catch (e: Exception) {
             Log.e(TAG, "✗ 识别失败: ${e.message}", e)
-            _error.value = "识别失败: ${e.message}"
+            _error.value = "语音识别失败: ${e.message}"
             return@withContext ""
         }
     }

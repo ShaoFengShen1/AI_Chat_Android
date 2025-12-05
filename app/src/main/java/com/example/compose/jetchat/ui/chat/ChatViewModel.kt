@@ -798,7 +798,19 @@ class ChatViewModel(
                     // 3. 获取识别结果
                     val transcription = cloudVoiceRecognizer.getLastRecognitionResult()
                     if (transcription.isNullOrEmpty()) {
-                        android.util.Log.w("ChatViewModel", "语音识别结果为空")
+                        // 获取错误信息并显示给用户
+                        val errorMsg = cloudVoiceRecognizer.error.value ?: "语音识别失败"
+                        android.util.Log.w("ChatViewModel", "语音识别失败: $errorMsg")
+                        
+                        // 显示错误提示消息
+                        val errorMessage = ChatMessage(
+                            id = messageIdCounter++,
+                            sessionId = sessionId,
+                            role = MessageRole.ASSISTANT,
+                            content = "⚠️ $errorMsg",
+                            status = MessageStatus.SENT
+                        )
+                        _messages.value = _messages.value + listOf(errorMessage)
                         return@launch
                     }
                     

@@ -13,7 +13,7 @@
       "attributes": [],
       "versionCode": 1,
       "versionName": "1.0",
-      "outputFile": "jimengminichat.apk"
+      "outputFile": "aichat.apk"
     }
   ],
   "elementType": "File",
@@ -22,14 +22,14 @@
       "minApi": 28,
       "maxApi": 30,
       "baselineProfiles": [
-        "baselineProfiles/1/jimengminichat.dm"
+        "baselineProfiles/1/aichat.dm"
       ]
     },
     {
       "minApi": 31,
       "maxApi": 2147483647,
       "baselineProfiles": [
-        "baselineProfiles/0/jimengminichat.dm"
+        "baselineProfiles/0/aichat.dm"
       ]
     }
   ],

@@ -34,5 +34,15 @@
 -dontwarn org.openjsse.javax.net.ssl.SSLSocket
 -dontwarn org.openjsse.net.ssl.OpenJSSE
 
+# PDFBox - 忽略可选的 JPEG2000 编解码器
+-dontwarn com.gemalto.jp2.JP2Decoder
+-dontwarn com.gemalto.jp2.JP2Encoder
+-dontwarn org.apache.pdfbox.jbig2.**
+-dontwarn com.levigo.jbig2.**
+
+# PDFBox - 保持核心类不被混淆
+-keep class com.tom_roush.pdfbox.** { *; }
+-keep class org.apache.pdfbox.** { *; }
+
 
 -keep class androidx.compose.ui.platform.AndroidCompositionLocals_androidKt { *; }
