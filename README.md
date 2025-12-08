@@ -99,43 +99,59 @@ UI层：Jetpack Compose + Material 3
 
 ```
 com.example.compose.jetchat/
-├── config/                    # 配置管理
-│   └── AppConfig.kt          # API密钥、模型配置
+├── config/                       # 配置管理
+│   └── AppConfig.kt             # API密钥、模型配置、超时设置
 │
-├── data/                      # 数据层
-│   ├── api/                  # 网络层
-│   │   └── ApiService.kt     # API调用、意图识别
+├── data/                         # 数据层
+│   ├── api/                     # 网络层（v1.8.2模块化重构）
+│   │   ├── ApiModels.kt         # API数据模型（Message, ChatRequest, ChatResponse）
+│   │   ├── ApiService.kt        # ⚠️ 已弃用（门面模式，用于兼容）
+│   │   ├── IntentDetectionService.kt  # 意图识别服务
+│   │   ├── ChatService.kt       # 文本对话服务
+│   │   ├── ImageGenerationService.kt  # 图片生成服务
+│   │   └── ImageCompressionService.kt # 图片压缩服务
 │   │
-│   ├── database/             # 数据库层
-│   │   ├── AppDatabase.kt    # 数据库定义
-│   │   ├── ChatDao.kt        # 消息DAO
-│   │   ├── ChatMessageEntity.kt
-│   │   ├── SessionSummaryDao.kt
-│   │   └── SessionSummaryEntity.kt
+│   ├── database/                # 数据库层（Room v8）
+│   │   ├── AppDatabase.kt       # 数据库定义与迁移
+│   │   ├── ChatDao.kt           # 消息数据访问对象
+│   │   ├── ChatMessageEntity.kt # 消息实体（含imageDescription）
+│   │   ├── SessionSummaryDao.kt # 摘要数据访问对象
+│   │   └── SessionSummaryEntity.kt # 摘要实体
 │   │
-│   └── summary/              # 摘要逻辑
-│       └── ConversationSummaryManager.kt
+│   ├── summary/                 # 对话摘要
+│   │   └── ConversationSummaryManager.kt # 智能摘要生成与管理
+│   │
+│   ├── voice/                   # 语音服务（v1.8.0新增）
+│   │   ├── CloudVoiceRecognizer.kt    # Whisper云端识别
+│   │   ├── DoubaoRealtimeService.kt   # 豆包实时对话（WebSocket）
+│   │   ├── LocalSpeechRecognizer.kt   # 本地语音识别
+│   │   ├── VoiceRealtimeService.kt    # OpenAI实时语音
+│   │   └── VoiceTTSService.kt         # TTS语音合成
+│   │
+│   └── utils/                   # 工具类
+│       └── DocumentProcessor.kt # 文档处理（PDF/DOC/TXT）
 │
-├── ui/                        # UI层
-│   ├── chat/                 # 聊天界面
-│   │   ├── ChatScreen.kt     # 聊天UI
-│   │   ├── ChatViewModel.kt  # 聊天逻辑
-│   │   └── ImageCache.kt     # 图片缓存
+├── ui/                           # UI层（Jetpack Compose）
+│   ├── chat/                    # 聊天界面
+│   │   ├── ChatMessage.kt       # 消息数据模型
+│   │   ├── ChatScreen.kt        # 聊天UI（含语音气泡）
+│   │   ├── ChatViewModel.kt     # 聊天业务逻辑（MVVM核心）
+│   │   └── ImageCache.kt        # LRU图片缓存
 │   │
-│   ├── chatlist/             # 会话列表
-│   │   ├── ChatListScreen.kt
-│   │   └── ChatListViewModel.kt
+│   ├── chatlist/                # 会话列表
+│   │   ├── ChatListScreen.kt    # 列表UI
+│   │   └── ChatListViewModel.kt # 列表逻辑
 │   │
-│   ├── login/                # 登录界面
-│   │   └── LoginScreen.kt    # 登录UI（v1.8.1新增）
-│   │
-│   └── theme/                # 主题配置
-│       ├── Color.kt
-│       ├── Theme.kt
-│       └── Type.kt
+│   └── login/                   # 登录界面（v1.8.1新增）
+│       └── LoginScreen.kt       # 登录UI与验证
 │
-├── JetchatApp.kt             # 应用入口
-└── MainActivity.kt           # 主Activity
+├── theme/                        # 主题配置（Material 3）
+│   ├── Color.kt                 # 颜色定义
+│   ├── Themes.kt                # 主题配置
+│   └── Typography.kt            # 字体排版
+│
+├── JetchatApp.kt                # 应用导航入口（NavHost）
+└── MainActivity.kt              # 主Activity（Compose宿主）
 ```
 
 **模块化设计原则：**
@@ -143,6 +159,41 @@ com.example.compose.jetchat/
 - ✅ **低耦合**：UI层不直接依赖数据层
 - ✅ **可测试**：ViewModel和Manager可独立测试
 - ✅ **可扩展**：易于添加新功能和新模块
+
+**API服务层架构（v1.8.2重构）：**
+
+```
+data/api/ (模块化服务架构)
+├── IntentDetectionService.kt   # 意图识别服务
+│   ├── IntentType枚举：TEXT_CHAT, IMAGE_GENERATION, IMAGE_RECOGNITION
+│   ├── IntentResult数据类：type, confidence, optimizedPrompt
+│   ├── RegexIntentDetector：正则表达式快速匹配
+│   └── AIIntentDetector：AI模型高准确率识别（自动降级）
+│
+├── ChatService.kt              # 文本对话服务
+│   ├── chat()：完整对话API（支持多轮历史）
+│   ├── sendMessage()：简化API（单条消息）
+│   └── 支持多模态：文本 + 图片数组
+│
+├── ImageGenerationService.kt   # 图片生成服务
+│   ├── generateImage()：核心生成API（可配置尺寸、质量）
+│   └── generateImageWithOptimizedPrompt()：使用AI优化Prompt
+│
+├── ImageCompressionService.kt  # 图片压缩服务
+│   ├── downloadAndCompressImage()：下载 + 压缩 + Base64编码
+│   ├── compressBitmap()：Bitmap压缩（可配置尺寸、质量）
+│   └── decodeBase64ToBitmap()：Base64解码为Bitmap
+│
+└── ApiService.kt (⚠️ Deprecated) # 门面模式（向后兼容）
+    └── 所有方法委托给上述独立服务
+
+设计优势：
+✅ 单一职责原则 (SRP) - 每个服务只做一件事
+✅ 开闭原则 (OCP) - 对扩展开放，对修改关闭
+✅ 依赖倒置原则 (DIP) - 高层模块不依赖低层模块
+✅ 接口隔离原则 (ISP) - 客户端不应依赖不需要的接口
+✅ 门面模式 (Facade) - 保持向后兼容，平滑迁移
+```
 
 ---
 
@@ -614,6 +665,47 @@ limitations under the License.
 ---
 
 ## 🔄 最新更新
+
+### v1.8.2 (2025-12-06) 🏗️ **架构重构 - 模块化设计**
+
+**🎯 重大重构：单一职责原则 (SRP)**
+- ✅ **ApiService 模块化拆分** - 将原 765 行 God Object 拆分为 4 个独立服务
+- ✅ **IntentDetectionService** (235 行) - 意图识别专用服务
+  - RegexIntentDetector：快速离线正则匹配
+  - AIIntentDetector：高准确率 AI 识别（Gemini 2.5 Flash）
+  - 自动降级策略：AI 失败时回退到正则
+  - 置信度评分：0-1 浮点数表示识别置信度
+- ✅ **ChatService** (143 行) - 文本对话专用服务
+  - `chat()` - 完整对话 API（支持多轮历史）
+  - `sendMessage()` - 简化 API（单条消息）
+  - 多模态支持：文本 + 图片数组格式
+- ✅ **ImageGenerationService** (139 行) - 图片生成专用服务
+  - `generateImage()` - 核心生成 API
+  - `generateImageWithOptimizedPrompt()` - AI 优化 Prompt
+  - 可配置尺寸、质量、模型
+- ✅ **ImageCompressionService** (162 行) - 图片压缩专用服务
+  - `downloadAndCompressImage()` - 网络图片下载 + 压缩
+  - `compressBitmap()` - Bitmap 压缩
+  - `decodeBase64ToBitmap()` - Base64 解码
+
+**📐 架构优势：**
+- 🎯 **高内聚低耦合** - 每个服务职责单一明确
+- 🧪 **可测试性** - 独立服务易于单元测试
+- 🔧 **可维护性** - 代码分散在多个小文件，易于理解
+- 🚀 **可扩展性** - 添加新功能无需修改现有服务
+- 🔄 **门面模式** - ApiService 保留作为门面，确保向后兼容
+
+**🔗 向后兼容性：**
+- ⚠️ **ApiService 标记为 @Deprecated** - 委托给新服务，保证旧代码正常运行
+- 📝 **IDE 提示迁移路径** - @ReplaceWith 注解提供自动重构建议
+- 🛡️ **零破坏性变更** - 现有代码无需修改即可运行
+
+**代码质量提升：**
+- 📉 **代码行数减少** - 原 765 行拆分为 4 × ~150 行
+- 📊 **圈复杂度降低** - 每个方法职责更清晰
+- 🔍 **日志分类** - 每个服务独立日志标签
+
+---
 
 ### v1.8.1 (2025-12-05) 🔐 **稳定性更新**
 

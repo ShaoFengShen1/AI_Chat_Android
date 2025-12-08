@@ -18,40 +18,39 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 意图类型
+ * API 服务类（门面模式）
+ * 
+ * ⚠️ 此类已重构为门面模式，建议直接使用独立的服务类：
+ * - IntentDetectionService：意图识别
+ * - ChatService：文本对话
+ * - ImageGenerationService：图片生成
+ * - ImageCompressionService：图片压缩
+ * 
+ * 此类保留用于向后兼容，将在未来版本中移除。
+ * 
+ * @see IntentDetectionService
+ * @see ChatService
+ * @see ImageGenerationService
+ * @see ImageCompressionService
  */
-enum class IntentType {
-    TEXT_CHAT,          // 普通文本对话
-    IMAGE_GENERATION,   // 图片生成
-    IMAGE_RECOGNITION   // 图片识别（已上传图片）
-}
-
-/**
- * 意图识别结果
- */
-data class IntentResult(
-    val type: IntentType,
-    val confidence: Float = 1.0f,  // 置信度 0-1
-    val optimizedPrompt: String? = null  // 优化后的Prompt（用于图片生成）
+@Deprecated(
+    message = "ApiService 已重构为模块化服务，建议使用独立服务类: IntentDetectionService, ChatService, ImageGenerationService, ImageCompressionService"
 )
-
-/**
- * 意图检测器接口
- */
-interface IntentDetector {
-    suspend fun detectIntent(message: String, hasImage: Boolean = false): IntentResult
-}
-
-/**
- * API 服务类
- */
 class ApiService {
     
+    // 模块化服务实例
+    private val intentDetectionService = IntentDetectionService()
+    private val chatService = ChatService()
+    private val imageGenerationService = ImageGenerationService()
+    private val imageCompressionService = ImageCompressionService()
+    
+    // 保留JSON解析器用于兼容性
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
     }
 
+    // 保留HTTP客户端用于遗留方法
     private val client = OkHttpClient.Builder()
         .apply {
             if (AppConfig.ENABLE_LOGGING) {
@@ -68,366 +67,61 @@ class ApiService {
         .readTimeout(AppConfig.TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .writeTimeout(AppConfig.TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
-
-    /**
-     * 正则表达式意图检测器（备选方案）
-     */
-    private class RegexIntentDetector : IntentDetector {
-        override suspend fun detectIntent(message: String, hasImage: Boolean): IntentResult {
-            // 如果已上传图片，意图是图片识别
-            if (hasImage) {
-                return IntentResult(IntentType.IMAGE_RECOGNITION, confidence = 1.0f)
-            }
-            
-            val lowerMessage = message.lowercase()
-            
-            // 图片生成的模式检测
-            val patterns = listOf(
-                // "生成" + "图"
-                Regex("生成.*?图"),
-                // "画" + 可选的量词
-                Regex("画(一张|一幅|一个|个)?"),
-                // "帮我" 或 "给我" + "画" 或 "生成"
-                Regex("(帮我|给我)(画|生成)"),
-                // "给我" + "一张/一幅/一个" + 任意内容 + "图/图片"
-                Regex("(给我|帮我)(一张|一幅|一个).*(图|图片)")
-            )
-            
-            val matched = patterns.find { it.containsMatchIn(lowerMessage) }
-            val isImageGen = matched != null
-            
-            android.util.Log.d("RegexIntentDetector", "检测图片生成关键词 - 消息: \"$message\"")
-            android.util.Log.d("RegexIntentDetector", "匹配到的模式: ${matched?.pattern ?: "无"}, 结果: $isImageGen")
-            
-            return if (isImageGen) {
-                IntentResult(IntentType.IMAGE_GENERATION, confidence = 0.8f)
-            } else {
-                IntentResult(IntentType.TEXT_CHAT, confidence = 0.9f)
-            }
-        }
-    }
     
     /**
-     * AI意图检测器（使用AI模型）
-     */
-    private inner class AIIntentDetector : IntentDetector {
-        override suspend fun detectIntent(message: String, hasImage: Boolean): IntentResult = withContext(Dispatchers.IO) {
-            // 如果已上传图片，意图是图片识别
-            if (hasImage) {
-                return@withContext IntentResult(IntentType.IMAGE_RECOGNITION, confidence = 1.0f)
-            }
-            
-            android.util.Log.d("AIIntentDetector", "开始AI意图识别 - 消息: \"$message\"")
-            val startTime = System.currentTimeMillis()
-            
-            try {
-                // 构建意图识别请求
-                val systemPrompt = """
-你是一个专业的意图识别助手。请分析用户的消息，判断用户的意图类型。
-
-意图类型：
-1. IMAGE_GENERATION - 用户想要生成/创建/画一张图片
-2. TEXT_CHAT - 普通的文本对话
-
-请用JSON格式回复，包含以下字段：
-- intent: 意图类型（IMAGE_GENERATION 或 TEXT_CHAT）
-- confidence: 置信度（0-1之间的浮点数）
-- optimized_prompt: 如果是图片生成，提供一个优化后的英文Prompt（详细、专业、适合DALL-E 3）
-
-示例1：
-用户消息："生成一只可爱的猫"
-你的回复：{"intent":"IMAGE_GENERATION","confidence":0.95,"optimized_prompt":"A cute cat with fluffy fur, sitting gracefully, soft lighting, photorealistic style, high quality"}
-
-示例2：
-用户消息："今天天气怎么样？"
-你的回复：{"intent":"TEXT_CHAT","confidence":0.98,"optimized_prompt":null}
-
-现在分析这条消息：
-""".trimIndent()
-
-                val intentRequest = buildJsonObject {
-                    put("model", AppConfig.INTENT_MODEL)
-                    putJsonArray("messages") {
-                        addJsonObject {
-                            put("role", "system")
-                            put("content", systemPrompt)
-                        }
-                        addJsonObject {
-                            put("role", "user")
-                            put("content", message)
-                        }
-                    }
-                    put("temperature", 0.3)  // 低温度，更确定的结果
-                    put("max_tokens", 5000)  // 增加Token限制，防止JSON被截断
-                }
-
-                val request = Request.Builder()
-                    .url(AppConfig.CHAT_API_URL)
-                    .addHeader("Authorization", "Bearer ${AppConfig.API_KEY}")
-                    .addHeader("Content-Type", "application/json")
-                    .post(intentRequest.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    val responseTime = System.currentTimeMillis() - startTime
-                    
-                    if (!response.isSuccessful) {
-                        val errorBody = response.body?.string() ?: "unknown error"
-                        when (response.code) {
-                            429 -> android.util.Log.w("AIIntentDetector", "AI意图识别失败: 429 Too Many Requests (请求过于频繁), 降级到正则表达式")
-                            401, 403 -> android.util.Log.w("AIIntentDetector", "AI意图识别失败: ${response.code} 认证错误, 降级到正则表达式")
-                            else -> android.util.Log.w("AIIntentDetector", "AI意图识别失败: ${response.code}, 降级到正则表达式")
-                        }
-                        android.util.Log.d("AIIntentDetector", "错误详情: $errorBody")
-                        return@withContext RegexIntentDetector().detectIntent(message, hasImage)
-                    }
-
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = json.parseToJsonElement(responseBody).jsonObject
-                    val aiReply = jsonResponse["choices"]?.jsonArray?.get(0)
-                        ?.jsonObject?.get("message")
-                        ?.jsonObject?.get("content")
-                        ?.jsonPrimitive?.content ?: ""
-
-                    android.util.Log.d("AIIntentDetector", "AI回复: $aiReply, 耗时: ${responseTime}ms")
-
-                    // 解析AI返回的JSON
-                    try {
-                    // 提取JSON部分（可能包含其他文本或Markdown代码块）
-                    // 先尝试移除Markdown代码块标记
-                    val cleanedReply = aiReply.replace("```json", "").replace("```", "").trim()
-                    
-                    // 尝试提取完整JSON（包括嵌套的大括号）
-                    val jsonMatch = Regex("\\{[\\s\\S]*?\\}").find(cleanedReply)
-                    if (jsonMatch == null) {
-                        android.util.Log.w("AIIntentDetector", "AI回复中未找到完整JSON，降级到正则表达式")
-                        android.util.Log.w("AIIntentDetector", "AI回复内容: $cleanedReply")
-                        return@withContext RegexIntentDetector().detectIntent(message, hasImage)
-                    }
-                    
-                    val intentJson = json.parseToJsonElement(jsonMatch.value).jsonObject
-                        val intentStr = intentJson["intent"]?.jsonPrimitive?.content ?: "TEXT_CHAT"
-                        val confidence = intentJson["confidence"]?.jsonPrimitive?.float ?: 0.9f
-                        val optimizedPrompt = intentJson["optimized_prompt"]?.jsonPrimitive?.contentOrNull
-
-                        val intentType = when (intentStr.uppercase()) {
-                            "IMAGE_GENERATION" -> IntentType.IMAGE_GENERATION
-                            else -> IntentType.TEXT_CHAT
-                        }
-
-                        android.util.Log.d("AIIntentDetector", "识别结果: $intentType, 置信度: $confidence")
-                        if (optimizedPrompt != null) {
-                            android.util.Log.d("AIIntentDetector", "优化Prompt: $optimizedPrompt")
-                        }
-
-                        IntentResult(
-                            type = intentType,
-                            confidence = confidence,
-                            optimizedPrompt = optimizedPrompt
-                        )
-                    } catch (e: Exception) {
-                        android.util.Log.e("AIIntentDetector", "解析AI回复失败: ${e.message}, 降级到正则表达式")
-                        RegexIntentDetector().detectIntent(message, hasImage)
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("AIIntentDetector", "AI意图识别异常: ${e.message}, 降级到正则表达式")
-                RegexIntentDetector().detectIntent(message, hasImage)
-            }
-        }
-    }
-    
-    // 意图检测器实例
-    private val intentDetector: IntentDetector = if (AppConfig.USE_AI_INTENT_DETECTION) {
-        AIIntentDetector()
-    } else {
-        RegexIntentDetector()
-    }
-    
-    /**
-     * 检测用户输入的意图
+     * 检测用户输入的意图（门面方法）
      * 
      * @param message 用户消息
      * @param hasImage 是否包含图片
      * @return 意图识别结果
+     * @deprecated 请使用 IntentDetectionService.detectIntentType() 代替
      */
+    @Deprecated(
+        message = "Use IntentDetectionService.detectIntentType() instead",
+        replaceWith = ReplaceWith("IntentDetectionService().detectIntentType(message, hasImage)")
+    )
     suspend fun detectIntent(message: String, hasImage: Boolean = false): String {
-        val result = intentDetector.detectIntent(message, hasImage)
-        return when (result.type) {
-            IntentType.IMAGE_GENERATION -> "image_generation"
-            IntentType.IMAGE_RECOGNITION -> "image_recognition"
-            IntentType.TEXT_CHAT -> "text_chat"
-        }
+        return intentDetectionService.detectIntentType(message, hasImage)
     }
     
     /**
-     * 优化图片生成 Prompt
+     * 优化图片生成 Prompt（门面方法）
+     * 
+     * @deprecated 请使用 IntentDetectionService.detectIntent().optimizedPrompt 代替
      */
+    @Deprecated("Use IntentDetectionService.detectIntent() and get optimizedPrompt from result")
     suspend fun optimizeImagePrompt(userPrompt: String): String {
-        val result = intentDetector.detectIntent(userPrompt, hasImage = false)
+        val result = intentDetectionService.detectIntent(userPrompt, hasImage = false)
         return result.optimizedPrompt ?: userPrompt
     }
     
     /**
-     * 生成图片
+     * 生成图片（门面方法）
+     * 
+     * @deprecated 请使用 ImageGenerationService.generateImage() 代替
      */
-    suspend fun generateImage(prompt: String): String = withContext(Dispatchers.IO) {
-        val imageRequest = buildJsonObject {
-            put("model", AppConfig.IMAGE_MODEL)
-            put("prompt", prompt)
-            put("n", 1)
-            put("size", "1024x1024")
-        }
-        
-        val request = Request.Builder()
-            .url(AppConfig.IMAGE_API_URL)
-            .addHeader("Authorization", "Bearer ${AppConfig.API_KEY}")
-            .addHeader("Content-Type", "application/json")
-            .post(imageRequest.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-        
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw Exception("图片生成失败: ${response.code}")
-            }
-            
-            val responseBody = response.body?.string() ?: throw Exception("响应为空")
-            val jsonResponse = json.parseToJsonElement(responseBody).jsonObject
-            
-            jsonResponse["data"]?.jsonArray?.firstOrNull()?.jsonObject
-                ?.get("url")?.jsonPrimitive?.content
-                ?: throw Exception("未找到图片URL")
-        }
+    @Deprecated(
+        message = "Use ImageGenerationService.generateImage() instead",
+        replaceWith = ReplaceWith("ImageGenerationService().generateImage(prompt, size = \"1024x1024\")")
+    )
+    suspend fun generateImage(prompt: String): String {
+        return imageGenerationService.generateImage(prompt, size = "1024x1024")
     }
     
     /**
-     * 下载并编码图片为 base64
-     */
-    suspend fun downloadAndEncodeImage(imageUrl: String): String = withContext(Dispatchers.IO) {
-        downloadImageAsBase64(imageUrl)
-    }
-
-    /**
-     * 下载图片并转换为 base64（极速优化版）
+     * 下载并编码图片为 base64（门面方法）
      * 
-     * 优化策略：
-     * 1. 使用流式处理，边下载边解码（节省内存）
-     * 2. 激进压缩到220px（移动端显示完全足够）
-     * 3. JPEG质量70%（平衡质量和大小）
-     * 4. RGB_565格式（减少50%内存）
-     * 5. inSampleSize=4（解码时就缩小4倍）
-     * 
-     * 效果：1024x1024 (~2MB PNG) → 220x220 (~20KB JPEG)
+     * @deprecated 请使用 ImageCompressionService.downloadAndCompressImage() 代替
      */
-    private fun downloadImageAsBase64(url: String): String {
-        val startTime = System.currentTimeMillis()
-        android.util.Log.d("ApiService", "开始下载图片: $url")
-        
-        // 设置更短的超时（图片下载不应该太久）
-        val imageClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(AppConfig.IMAGE_DOWNLOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
-            .build()
-        
-        val request = Request.Builder()
-            .url(url)
-            .build()
-        
-        imageClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw Exception("下载图片失败: ${response.code}")
-            }
-            
-            val contentLength = response.body?.contentLength() ?: 0L
-            if (contentLength > 0) {
-                android.util.Log.d("ApiService", "原始文件大小: ${contentLength / 1024}KB")
-            }
-            
-            // 读取字节数组（网络流不支持mark/reset）
-            val imageBytes = response.body?.bytes() 
-                ?: throw Exception("图片数据为空")
-            
-            val downloadTime = System.currentTimeMillis()
-            android.util.Log.d("ApiService", "下载完成，开始解码...")
-            
-            // 第一步：读取图片尺寸（不加载到内存）
-            val options = BitmapFactory.Options().apply {
-                inJustDecodeBounds = true
-            }
-            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
-            
-            // 计算极致的压缩比例
-            val maxSize = AppConfig.IMAGE_DISPLAY_SIZE  // 使用配置的显示尺寸
-            val sampleSize = calculateInSampleSize(options, maxSize, maxSize)
-            
-            android.util.Log.d("ApiService", "原始尺寸: ${options.outWidth}x${options.outHeight}, 采样率: $sampleSize")
-            
-            // 第二步：实际解码（使用采样率大幅降低内存）
-            options.inJustDecodeBounds = false
-            options.inSampleSize = sampleSize
-            options.inPreferredConfig = Bitmap.Config.RGB_565  // 减少50%内存
-            
-            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
-                ?: throw Exception("图片解码失败")
-            
-            val decodeTime = System.currentTimeMillis()
-            android.util.Log.d("ApiService", "解码完成: ${bitmap.width}x${bitmap.height}, 耗时: ${decodeTime - downloadTime}ms")
-            
-            // 精确缩放到目标尺寸
-            val finalBitmap = if (bitmap.width > maxSize || bitmap.height > maxSize) {
-                val scale = minOf(
-                    maxSize.toFloat() / bitmap.width,
-                    maxSize.toFloat() / bitmap.height
-                )
-                Bitmap.createScaledBitmap(
-                    bitmap,
-                    (bitmap.width * scale).toInt(),
-                    (bitmap.height * scale).toInt(),
-                    true  // 使用双线性过滤，质量更好
-                ).also { bitmap.recycle() }
-            } else {
-                bitmap
-            }
-            
-            // 使用更高压缩率（移动端不需要高质量）
-            val outputStream = ByteArrayOutputStream()
-            finalBitmap.compress(Bitmap.CompressFormat.JPEG, 70, outputStream)  // 质量70%，平衡质量和大小
-            val compressedBytes = outputStream.toByteArray()
-            
-            finalBitmap.recycle()
-            
-            val totalTime = System.currentTimeMillis() - startTime
-            val finalSize = compressedBytes.size / 1024
-            val originalSize = imageBytes.size / 1024
-            val compressionRatio = String.format("%.1f", (finalSize.toFloat() / originalSize) * 100)
-            
-            android.util.Log.d("ApiService", "✅ 图片处理完成: ${originalSize}KB → ${finalSize}KB (压缩到${compressionRatio}%), 总耗时: ${totalTime}ms")
-            
-            return Base64.encodeToString(compressedBytes, Base64.NO_WRAP)
-        }
+    @Deprecated(
+        message = "Use ImageCompressionService.downloadAndCompressImage() instead",
+        replaceWith = ReplaceWith("ImageCompressionService().downloadAndCompressImage(imageUrl)")
+    )
+    suspend fun downloadAndEncodeImage(imageUrl: String): String {
+        return imageCompressionService.downloadAndCompressImage(imageUrl)
     }
-    
-    /**
-     * 计算 inSampleSize（解码时的缩放倍数）
-     */
-    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
-        val height = options.outHeight
-        val width = options.outWidth
-        var inSampleSize = 1
 
-        if (height > reqHeight || width > reqWidth) {
-            val halfHeight = height / 2
-            val halfWidth = width / 2
 
-            // 计算最大的 inSampleSize（2 的幂次），保证缩放后尺寸仍大于目标尺寸
-            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
-                inSampleSize *= 2
-            }
-        }
-
-        return inSampleSize
-    }
 
     /**
      * API 响应结果
@@ -438,12 +132,15 @@ class ApiService {
     )
 
     /**
-     * 发送多轮对话请求（支持摘要）
+     * 发送多轮对话请求（支持摘要）（门面方法）
      * @param conversationHistory 对话历史 List<Pair<role, content>>
      * @param currentUserMessage 当前用户输入的消息（用于判断是否生成图片）
      * @param imageBase64 图片 base64 编码（可选）
      * @return AI 的回复
+     * 
+     * @deprecated 请直接使用 IntentDetectionService + ChatService / ImageGenerationService
      */
+    @Deprecated("Use modular services: IntentDetectionService, ChatService, ImageGenerationService")
     suspend fun sendChatRequestWithHistory(
         conversationHistory: List<Pair<String, String>>,
         currentUserMessage: String = "",
@@ -454,9 +151,9 @@ class ApiService {
             conversationHistory.lastOrNull { it.first == "user" }?.second ?: ""
         }
         
-        // 使用AI意图检测器
-        val intentResult = intentDetector.detectIntent(messageToCheck, hasImage = imageBase64 != null)
-        val shouldGenerateImage = (intentResult.type == IntentType.IMAGE_GENERATION) && imageBase64 == null
+        // 使用模块化的意图检测服务
+        val intentResult = intentDetectionService.detectIntent(messageToCheck, hasImage = imageBase64 != null)
+        val shouldGenerateImage = (intentResult.type == IntentDetectionService.IntentType.IMAGE_GENERATION) && imageBase64 == null
         val modelToUse = if (shouldGenerateImage) AppConfig.IMAGE_MODEL else AppConfig.CHAT_MODEL
         
         // 如果需要生成图片且有优化Prompt，使用优化后的Prompt
@@ -515,15 +212,18 @@ class ApiService {
     }
     
     /**
-     * 发送聊天请求到 VectorEngine API（单条消息）
+     * 发送聊天请求到 VectorEngine API（单条消息）（门面方法）
      * @param userMessage 用户消息
      * @param imageBase64 图片 base64 编码（可选）
      * @return AI 的回复（可能包含文本和图片）
+     * 
+     * @deprecated 请直接使用 IntentDetectionService + ChatService / ImageGenerationService
      */
+    @Deprecated("Use modular services: IntentDetectionService, ChatService, ImageGenerationService")
     suspend fun sendChatRequest(userMessage: String, imageBase64: String? = null): ApiResponse {
-        // 使用AI意图检测器
-        val intentResult = intentDetector.detectIntent(userMessage, hasImage = imageBase64 != null)
-        val shouldGenerateImage = (intentResult.type == IntentType.IMAGE_GENERATION) && imageBase64 == null
+        // 使用模块化的意图检测服务
+        val intentResult = intentDetectionService.detectIntent(userMessage, hasImage = imageBase64 != null)
+        val shouldGenerateImage = (intentResult.type == IntentDetectionService.IntentType.IMAGE_GENERATION) && imageBase64 == null
         val modelToUse = if (shouldGenerateImage) AppConfig.IMAGE_MODEL else AppConfig.CHAT_MODEL
         
         // 如果需要生成图片且有优化Prompt，使用优化后的Prompt
@@ -681,9 +381,9 @@ class ApiService {
                     val imageUrl = firstImage["url"]?.jsonPrimitive?.content
                     if (imageUrl != null) {
                         android.util.Log.d("ApiService", "收到图片 URL: $imageUrl")
-                        // 下载图片并转换为 base64
+                        // 使用模块化的图片压缩服务下载并转换为 base64
                         try {
-                            val imageBase64 = downloadImageAsBase64(imageUrl)
+                            val imageBase64 = imageCompressionService.downloadAndCompressImage(imageUrl)
                             return ApiResponse(text = "生成的图片：", imageBase64 = imageBase64)
                         } catch (e: Exception) {
                             android.util.Log.e("ApiService", "下载图片失败", e)
