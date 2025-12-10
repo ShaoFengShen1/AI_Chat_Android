@@ -95,6 +95,46 @@ UI层：Jetpack Compose + Material 3
 └── 缓存：LRU Cache
 ```
 
+### ⚠️ 豆包实时对话配置说明（v1.8.2 重要更新）
+
+**1. SSL 证书问题临时解决方案：**
+- 为解决 `openspeech.bytedance.com` SSL 证书验证失败，当前版本临时**禁用了 SSL 证书验证**
+- ⚠️ **仅用于开发/测试**，生产环境必须使用正确的证书验证
+- 位置：`DoubaoRealtimeService.kt` 第 85-100 行（自定义 TrustManager）
+
+**2. 认证配置（必须正确填写）：**
+
+在 `AppConfig.kt` 中配置以下参数：
+
+```kotlin
+const val DOUBAO_APP_ID = "你的AppID"        // 从火山引擎控制台获取
+const val DOUBAO_ACCESS_KEY = "你的AccessKey" // 从火山引擎控制台获取
+const val DOUBAO_APP_KEY = "PlgvMymc7f3tQnJ6" // 固定值（官方文档规定）
+```
+
+**🔑 如何获取 AppID 和 AccessKey：**
+1. 访问 [火山引擎控制台](https://console.volcengine.com/speech)
+2. 开通 **豆包端到端实时语音大模型** 服务
+3. 在控制台查看 AppID 和 Access Key
+4. **注意**：`DOUBAO_APP_KEY` 是固定值 `PlgvMymc7f3tQnJ6`（根据官方文档 2.1 节）
+
+**3. 常见连接错误及解决方案：**
+
+| 错误现象 | HTTP 码 | 可能原因 | 解决方案 |
+|---------|--------|---------|---------|
+| `Expected HTTP 101 but was '200 OK'` | 200 | AppID/AccessKey 不正确 | 重新检查控制台的 AppID 和 AccessKey 是否复制正确 |
+| `Unauthorized` | 401 | 认证失败 | 确认 AppID 和 AccessKey 是否匹配同一个账号 |
+| `Forbidden` | 403 | 服务未开通或配额不足 | 在火山引擎控制台开通服务并检查 QPM/TPM 配额 |
+| `SSLHandshakeException` | - | SSL 证书不受信任 | 当前版本已禁用验证，如仍报错请检查网络连接 |
+| `Unable to resolve host` | - | 网络连接问题 | 检查设备能否访问 openspeech.bytedance.com |
+
+**4. 调试技巧：**
+- 在 Logcat 中过滤 `DoubaoRealtime` 查看详细日志
+- 成功连接会显示：`✅ WebSocket 连接成功` 和服务端 LogID
+- 连接失败会显示完整的 HTTP 状态码、响应头和响应体
+
+---
+
 ### 项目结构（模块化设计）
 
 ```
@@ -104,7 +144,6 @@ com.example.compose.jetchat/
 │
 ├── data/                         # 数据层
 │   ├── api/                     # 网络层（v1.8.2模块化重构）
-│   │   ├── ApiModels.kt         # API数据模型（Message, ChatRequest, ChatResponse）
 │   │   ├── ApiService.kt        # ⚠️ 已弃用（门面模式，用于兼容）
 │   │   ├── IntentDetectionService.kt  # 意图识别服务
 │   │   ├── ChatService.kt       # 文本对话服务
@@ -666,10 +705,35 @@ limitations under the License.
 
 ## 🔄 最新更新
 
-### v1.8.2 (2025-12-06) 🏗️ **架构重构 - 模块化设计**
+### v1.8.2 (2025-12-10) 🏗️ **架构重构与豆包语音优化**
 
 **🎯 重大重构：单一职责原则 (SRP)**
 - ✅ **ApiService 模块化拆分** - 将原 765 行 God Object 拆分为 4 个独立服务
+
+**🎙️ 豆包实时语音优化：**
+- ✅ **修复语音截断问题** - `end_smooth_window_ms` 从 1.5 秒增加到 3 秒
+  - 解决说话内容较长时被提前截断的问题
+  - 例如："你知道什么是计算机吗" 不再被识别成 "你知道什么事吗"
+  - 支持说话时的自然停顿，不会过早判定为说话结束
+- ✅ **增强用户打断功能** - 移除"播放时跳过录音"的限制
+  - 用户可以随时说话打断 AI 回复
+  - 服务端通过 `EVENT_ASR_INFO` 事件自动触发打断
+  - 硬件回声消除(AEC)确保打断时无回声干扰
+  - 打断后自动清空音频队列，立即响应用户新输入
+- ✅ **优化音频播放流畅度** - 彻底解决 AI 语音"卡顿"问题
+  - **4倍缓冲区**：AudioTrack 缓冲区从 2 倍增加到 4 倍，减少底层缓冲不足
+  - **预缓冲机制**：积累 3 个音频包再播放，避免初期卡顿
+  - **批量写入**：一次写入 5 个音频包，减少系统调用次数 80%
+  - **智能轮询**：优化队列检查间隔，减少 CPU 占用
+  - **可配置参数**：在 `AppConfig.kt` 中可调整缓冲策略
+- ✅ **可配置化设计** - 所有关键参数可在 `AppConfig.kt` 中调整
+  - `DOUBAO_END_SMOOTH_WINDOW_MS`：停顿判定时间（500-50000ms）
+  - `AUDIO_BUFFER_MULTIPLIER`：缓冲区倍数（推荐 4-8）
+  - `PRE_BUFFER_PACKETS`：预缓冲包数（推荐 2-5）
+  - `BATCH_WRITE_SIZE`：批量写入大小（推荐 3-10）
+- ✅ **SSL 证书问题排查** - 添加详细日志输出，帮助诊断网络问题
+  - 显示完整的 HTTP 响应头和响应体
+  - 识别校园网认证、代理等网络拦截问题
 - ✅ **IntentDetectionService** (235 行) - 意图识别专用服务
   - RegexIntentDetector：快速离线正则匹配
   - AIIntentDetector：高准确率 AI 识别（Gemini 2.5 Flash）

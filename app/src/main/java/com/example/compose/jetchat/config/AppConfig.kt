@@ -109,6 +109,45 @@ object AppConfig {
     const val DOUBAO_WEBSOCKET_URL = "wss://openspeech.bytedance.com/api/v3/realtime/dialogue"
     const val DOUBAO_APP_ID = "5378919538"  // ⚠️ 替换为你的 AppID
     const val DOUBAO_ACCESS_KEY = "IZADZfCNNyC6FdvWvmDQdseW1w2aIDdl"  // ⚠️ 替换为你的 Access Key
+    const val DOUBAO_APP_KEY = "PlgvMymc7f3tQnJ6"  // 固定值（根据官方文档）
+    
+    /**
+     * 豆包 ASR 配置
+     * 
+     * end_smooth_window_ms: 判断用户说话停止的时间窗口（毫秒）
+     * - 范围：500ms - 50000ms
+     * - 默认：1500ms
+     * - 当前：3000ms（适合正常语速，不容易截断）
+     * - 说明：用户停顿超过此时间后，系统认为说话结束
+     * 
+     * 重要提示：
+     * - 此参数仅影响"说话结束判定"，不影响"打断功能"
+     * - 用户可以随时说话打断 AI，服务端会立即通过 EVENT_ASR_INFO 触发打断
+     * - 硬件回声消除(AEC)已启用，用户说话时 AI 语音会自动停止
+     */
+    const val DOUBAO_END_SMOOTH_WINDOW_MS = 3000  // 3秒停顿判定
+    
+    /**
+     * 豆包音频播放优化配置
+     * 
+     * AUDIO_BUFFER_MULTIPLIER: AudioTrack 缓冲区倍数
+     * - 默认：2倍最小缓冲
+     * - 当前：4倍（减少卡顿，增加流畅度）
+     * - 说明：缓冲区越大越流畅，但延迟会略微增加
+     * 
+     * PRE_BUFFER_PACKETS: 预缓冲音频包数量
+     * - 默认：1（立即播放）
+     * - 当前：3（积累3个包再播放）
+     * - 说明：预缓冲可以避免播放初期的卡顿
+     * 
+     * BATCH_WRITE_SIZE: 批量写入音频包数量
+     * - 默认：1（逐个写入）
+     * - 当前：5（批量写入）
+     * - 说明：减少系统调用次数，提高播放效率
+     */
+    const val AUDIO_BUFFER_MULTIPLIER = 4  // 缓冲区倍数
+    const val PRE_BUFFER_PACKETS = 3       // 预缓冲包数
+    const val BATCH_WRITE_SIZE = 5         // 批量写入大小
     
     /**
      * 会话类型枚举

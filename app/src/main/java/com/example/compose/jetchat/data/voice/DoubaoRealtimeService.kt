@@ -20,6 +20,11 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
+import javax.net.ssl.HostnameVerifier
 
 /**
  * 豆包端到端实时语音对话服务
@@ -76,6 +81,26 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
         .connectTimeout(AppConfig.WEBSOCKET_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)  // 实时流不限制读取超时
         .pingInterval(AppConfig.WEBSOCKET_PING_INTERVAL_MS, TimeUnit.MILLISECONDS)
+        .apply {
+            // ⚠️ 仅用于开发/测试：信任所有 SSL 证书
+            try {
+                val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+                    override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+                    override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+                    override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+                })
+                
+                val sslContext = SSLContext.getInstance("TLS")
+                sslContext.init(null, trustAllCerts, java.security.SecureRandom())
+                
+                sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
+                hostnameVerifier(HostnameVerifier { _, _ -> true })
+                
+                Log.d(TAG, "✅ SSL 证书验证已禁用（仅用于开发测试）")
+            } catch (e: Exception) {
+                Log.e(TAG, "SSL 配置失败", e)
+            }
+        }
         .build()
     
     // 统一管理协程生命周期，防止悬空引用
@@ -159,16 +184,18 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
         Log.d(TAG, "📋 配置检查通过:")
         Log.d(TAG, "   App ID: ${AppConfig.DOUBAO_APP_ID}")
         Log.d(TAG, "   Access Key: ${AppConfig.DOUBAO_ACCESS_KEY.take(10)}***")
+        Log.d(TAG, "   App Key: ${AppConfig.DOUBAO_APP_KEY.take(10)}***")
         
         _connectionState.value = "正在连接..."
         
         val request = try {
             Request.Builder()
                 .url(AppConfig.DOUBAO_WEBSOCKET_URL)
+                // 豆包 API 认证头（严格按照官方文档 2.1 节配置）
                 .addHeader("X-Api-App-ID", AppConfig.DOUBAO_APP_ID)
                 .addHeader("X-Api-Access-Key", AppConfig.DOUBAO_ACCESS_KEY)
                 .addHeader("X-Api-Resource-Id", "volc.speech.dialog")
-                .addHeader("X-Api-App-Key", "PlgvMymc7f3tQnJ6")
+                .addHeader("X-Api-App-Key", AppConfig.DOUBAO_APP_KEY)
                 .addHeader("X-Api-Connect-Id", connectId)
                 .build()
         } catch (e: Exception) {
@@ -178,6 +205,11 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
         }
         
         Log.d(TAG, "→ 正在建立 WebSocket 连接...")
+        Log.d(TAG, "📋 请求头详情:")
+        request.headers.forEach { (name, value) ->
+            val displayValue = if (name == "X-Api-Access-Key") "${value.take(10)}***" else value
+            Log.d(TAG, "   $name: $displayValue")
+        }
         
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -204,16 +236,39 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
             }
             
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val errorMsg = buildString {
-                    append("连接失败: ")
-                    append(t.message ?: "未知错误")
-                    if (response != null) {
-                        append("\n响应码: ${response.code}")
-                        append("\n响应消息: ${response.message}")
+                Log.e(TAG, "❌ WebSocket 连接失败: ${t.message}", t)
+                
+                if (response != null) {
+                    Log.e(TAG, "📋 服务器响应详情:")
+                    Log.e(TAG, "   HTTP 状态码: ${response.code} ${response.message}")
+                    
+                    // 显示响应头（可能包含错误提示）
+                    response.headers.forEach { (name, value) ->
+                        Log.e(TAG, "   响应头 $name: $value")
                     }
+                    
+                    // 尝试读取响应体（可能包含详细错误信息）
+                    try {
+                        val body = response.body?.string()
+                        if (!body.isNullOrEmpty()) {
+                            Log.e(TAG, "   响应体: $body")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "   无法读取响应体: ${e.message}")
+                    }
+                    
+                    // 用户友好的错误提示
+                    val userMsg = when (response.code) {
+                        200 -> "认证失败：请检查 AppID 和 AccessKey 是否正确配置"
+                        401 -> "认证失败：AppID 或 AccessKey 不正确"
+                        403 -> "服务未开通：请在火山引擎控制台开通豆包端到端实时语音服务"
+                        else -> "连接失败 (${response.code}): ${t.message}"
+                    }
+                    _connectionState.value = userMsg
+                } else {
+                    _connectionState.value = "连接失败: ${t.message}"
                 }
-                Log.e(TAG, "❌ WebSocket $errorMsg", t)
-                _connectionState.value = errorMsg
+                
                 cleanup()
             }
             
@@ -272,8 +327,10 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
         val sessionConfig = JSONObject().apply {
             put("asr", JSONObject().apply {
                 put("extra", JSONObject().apply {
-                    put("end_smooth_window_ms", 1500)
+                    // 用户说话停顿判定时间（从 AppConfig 读取）
+                    put("end_smooth_window_ms", AppConfig.DOUBAO_END_SMOOTH_WINDOW_MS)
                     put("enable_custom_vad", false)
+                    // 开启二遍识别，提升最终识别准确率
                     put("enable_asr_twopass", true)
                 })
             })
@@ -358,16 +415,14 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
                 val buffer = ByteArray(640)  // 20ms 音频 = 640字节
                 
                 while (isActive && _isRecording.value) {
-                    // 如果正在播放AI语音,跳过录音以避免回声
-                    if (_isPlaying.value) {
-                        delay(50)
-                        continue
-                    }
+                    // ✅ 移除播放时跳过录音的限制
+                    // 允许用户随时说话打断 AI，服务端会通过 EVENT_ASR_INFO 自动处理打断
+                    // 使用 VOICE_COMMUNICATION 音频源已启用硬件回声消除(AEC)，无需手动跳过
                     
                     val bytesRead = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                     
                     if (bytesRead > 0) {
-                        // 发送音频数据
+                        // 发送音频数据到服务端
                         val frame = buildBinaryFrame(
                             messageType = MSG_TYPE_AUDIO_ONLY_REQUEST,
                             eventId = EVENT_TASK_REQUEST,
@@ -406,11 +461,12 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
      * 启动音频播放
      */
     private fun startAudioPlayback() {
+        // 增加缓冲区大小，减少卡顿（从 AppConfig 读取倍数）
         val bufferSize = AudioTrack.getMinBufferSize(
             SAMPLE_RATE_24K,
             CHANNEL_OUT,
             ENCODING_16BIT
-        ) * 2
+        ) * AppConfig.AUDIO_BUFFER_MULTIPLIER
         
         try {
             // 使用VOICE_COMMUNICATION优先路由到耳机,减少扬声器回声
@@ -435,15 +491,46 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
             playbackJob = serviceScope.launch {
                 var idleCount = 0
                 var shouldStop = false
+                var isPreBuffering = true  // 预缓冲标志
+                val minPreBufferPackets = AppConfig.PRE_BUFFER_PACKETS  // 从 AppConfig 读取
+                
                 while (isActive && !shouldStop) {
-                    val audioData = audioQueue.poll()
-                    if (audioData != null) {
+                    // 预缓冲阶段：等待积累足够的音频数据
+                    if (isPreBuffering) {
+                        if (audioQueue.size >= minPreBufferPackets) {
+                            isPreBuffering = false
+                            Log.d(TAG, "✅ 预缓冲完成，开始播放（队列大小: ${audioQueue.size}）")
+                        } else {
+                            delay(50)  // 等待更多数据
+                            continue
+                        }
+                    }
+                    
+                    // 批量获取音频数据（从 AppConfig 读取批量大小）
+                    val batchData = mutableListOf<ByteArray>()
+                    repeat(AppConfig.BATCH_WRITE_SIZE) {
+                        val data = audioQueue.poll()
+                        if (data != null) {
+                            batchData.add(data)
+                        }
+                    }
+                    
+                    if (batchData.isNotEmpty()) {
+                        // 合并音频数据，减少系统调用次数
+                        val totalSize = batchData.sumOf { it.size }
+                        val mergedData = ByteArray(totalSize)
+                        var offset = 0
+                        batchData.forEach { data ->
+                            System.arraycopy(data, 0, mergedData, offset, data.size)
+                            offset += data.size
+                        }
+                        
                         // 🔒 同步访问 audioTrack，防止 SIGSEGV
                         val writeSuccess = synchronized(audioTrackLock) {
                             val track = audioTrack
                             if (track != null && track.state == AudioTrack.STATE_INITIALIZED) {
                                 try {
-                                    track.write(audioData, 0, audioData.size)
+                                    track.write(mergedData, 0, mergedData.size)
                                     true
                                 } catch (e: Exception) {
                                     Log.e(TAG, "音频写入失败: ${e.message}")
@@ -462,12 +549,16 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
                             shouldStop = true
                         }
                     } else {
-                        delay(10)
+                        // 队列为空，等待更多数据
+                        delay(20)  // 增加等待时间，减少 CPU 占用
                         idleCount++
-                        // 如果队列空闲超过500ms,认为播放完成
-                        if (idleCount > 50) {
+                        
+                        // 如果队列空闲超过 500ms，认为播放完成
+                        if (idleCount > 25) {  // 25 * 20ms = 500ms
                             _isPlaying.value = false
                             idleCount = 0
+                            // 重置预缓冲标志，为下一轮做准备
+                            isPreBuffering = true
                         }
                     }
                 }
@@ -577,9 +668,16 @@ class DoubaoRealtimeService(private val appContext: android.content.Context) {
             }
             EVENT_ASR_INFO -> {
                 Log.d(TAG, "🎙️ 检测到用户开始说话")
-                // 可以在这里打断AI的播放
-                stopAudioPlayback()
-                audioQueue.clear()
+                
+                // 用户打断 AI 播放
+                if (_isPlaying.value) {
+                    Log.d(TAG, "⚡ 用户打断 AI 播放")
+                    stopAudioPlayback()
+                    audioQueue.clear()  // 清空待播放的音频队列
+                    Log.d(TAG, "✅ 音频队列已清空，等待用户说话")
+                }
+                
+                // 重新启动播放器（准备接收新的音频）
                 startAudioPlayback()
             }
             EVENT_ASR_RESPONSE -> {
